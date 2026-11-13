@@ -105,7 +105,7 @@
       <div class="bg-[#111827] border border-slate-800/90 rounded-xl p-3">
         <div class="text-[11px] text-slate-400">US Spot ETF Flow</div>
         <div id="kpi-etf" class="text-sm sm:text-base font-semibold text-rose-400 mt-0.5">-$1.48B Outflow</div>
-        <div class="text-[11px] text-slate-400 mt-0.5">Alt ETFs: +$1.75B YTD</div>
+        <div id="kpi-btcd" class="text-[11px] text-sky-400 mt-0.5 font-mono-num">BTC.D: --%</div>
       </div>
       <div class="bg-[#111827] border border-slate-800/90 rounded-xl p-3">
         <div class="text-[11px] text-slate-400">RSI (14) Zone</div>
@@ -307,17 +307,21 @@
             <input id="invest-inr" type="number" min="100" step="100" value="1000" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm font-mono-num text-white focus:outline-none focus:ring-1 focus:ring-sky-500" />
           </div>
 
+          <label class="inline-flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+            <input type="checkbox" id="toggle-tds" checked class="rounded border-slate-600 bg-slate-800 text-sky-500 focus:ring-0" />
+            <span>Deduct 1% Indian TDS + 0.2% Spot Fee</span>
+          </label>
           <div class="bg-slate-900/70 border border-slate-800 rounded-lg p-2.5 space-y-1.5 text-xs">
             <div class="flex justify-between">
               <span class="text-slate-400">You Get (Spot Qty):</span>
               <span id="calc-qty" class="font-mono-num text-white font-medium">--</span>
             </div>
             <div class="flex justify-between">
-              <span class="text-slate-400">Profit at Target 1:</span>
+              <span class="text-slate-400">Net Profit at Target 1:</span>
               <span id="calc-p1" class="font-mono-num text-emerald-400 font-medium">--</span>
             </div>
             <div class="flex justify-between">
-              <span class="text-slate-400">Profit at Target 2:</span>
+              <span class="text-slate-400">Net Profit at Target 2:</span>
               <span id="calc-p2" class="font-mono-num text-emerald-300 font-medium">--</span>
             </div>
             <div class="flex justify-between">
@@ -329,11 +333,16 @@
 
         <!-- Paper Spot Swing Tracker -->
         <div class="bg-[#111827] border border-slate-800/90 rounded-xl p-3.5 space-y-3">
-          <div class="flex items-center justify-between">
+          <div class="flex items-center justify-between gap-2">
             <h2 class="text-sm font-semibold text-white">Paper Spot Watchlist</h2>
-            <button id="add-paper-btn" type="button" class="px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold transition">
-              + Track Paper Buy
-            </button>
+            <div class="flex gap-1.5">
+              <button id="tg-test-btn" type="button" class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sky-300 text-[11px] font-medium transition">
+                TG Alert
+              </button>
+              <button id="add-paper-btn" type="button" class="px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold transition">
+                + Track Buy
+              </button>
+            </div>
           </div>
           <div id="paper-list" class="space-y-2 text-xs max-h-48 overflow-y-auto">
             <div class="text-slate-500 text-center py-4">Click "+ Track Paper Buy" to log a simulated ₹ INR spot swing entry.</div>
@@ -476,11 +485,13 @@
         if (!scanRes.ok) throw new Error('Scanner API error');
         const scanData = await scanRes.json();
 
+        if (scanData && scanData.btc_dominance) { document.getElementById('kpi-btcd').textContent = 'BTC.D: ' + scanData.btc_dominance + '%'; }
         if (scanData && Array.isArray(scanData.coins) && scanData.coins.length) {
           // Render live 25-coin scanner from CoinGecko + CoinDCX INR
           const body = document.getElementById('scanner-body');
           body.innerHTML = scanData.coins.map(c => {
-            const pairGuess = c.symbol + 'USDT';
+            const isStable = ['USDT','USDC','FDUSD','DAI'].includes(c.symbol);
+            const pairGuess = isStable ? 'BTCUSDT' : (c.symbol + 'USDT');
             const active = pairGuess === state.pair;
             const sigCls = c.signal === 'Breakout Momentum' || c.signal === 'Accumulation'
               ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
@@ -512,7 +523,34 @@
               }
               state.pair = p;
               sel.value = p;
-              fetchMarketData();
+          
+    document.getElementById('toggle-tds').addEventListener('change', updateInvestmentCalc);
+    document.getElementById('tg-test-btn').addEventListener('click', async () => {
+      try {
+        const r = await fetch('/api/alerts/test', { method: 'POST' });
+        const d = await r.json();
+        showToast(d.sent ? 'Telegram alert sent for ' + d.coin : (d.detail || 'Telegram not configured'), d.sent ? 'success' : 'info');
+      } catch (_) {
+        showToast('Connect backend to test Telegram alerts', 'info');
+      }
+    });
+
+    async function loadPersistedTrades() {
+      try {
+        const r = await fetch('/api/trades');
+        if (!r.ok) return;
+        const d = await r.json();
+        if (Array.isArray(d.trades) && d.trades.length) {
+          state.paperTrades = d.trades.map(t => ({
+            sym: t.symbol, budget: t.budget_inr, buy: t.buy_price_inr, tp1: t.target_inr
+          }));
+          renderPaperTrades();
+        }
+      } catch (_) {}
+    }
+    loadPersistedTrades();
+
+    fetchMarketData();
               showToast('Loaded ' + p.replace('USDT', '') + ' / INR');
             });
           });
@@ -724,9 +762,11 @@
       const budgetInr = Math.max(0, parseFloat(document.getElementById('invest-inr').value) || 0);
       const buyInr = a.buyUsd * fx;
       const qty = buyInr > 0 ? budgetInr / buyInr : 0;
-      const p1 = qty * (a.tp1Usd * fx - buyInr);
-      const p2 = qty * (a.tp2Usd * fx - buyInr);
-      const loss = qty * (buyInr - a.slUsd * fx);
+      const deductTax = document.getElementById('toggle-tds')?.checked;
+      const sellMult = deductTax ? 0.988 : 1.0; // 1% TDS + 0.2% round-trip fee
+      const p1 = qty * (a.tp1Usd * fx * sellMult - buyInr);
+      const p2 = qty * (a.tp2Usd * fx * sellMult - buyInr);
+      const loss = qty * (buyInr - a.slUsd * fx * sellMult);
 
       const sym = state.pair.replace('USDT', '');
       document.getElementById('calc-qty').textContent = `${qty.toFixed(6)} ${sym}`;
@@ -922,13 +962,17 @@
       if (!a) return;
       const fx = state.usdInr;
       const budget = parseFloat(document.getElementById('invest-inr').value) || 1000;
-      state.paperTrades.unshift({
-        sym: state.pair.replace('USDT', ''),
-        budget,
-        buy: a.buyUsd * fx,
-        tp1: a.tp1Usd * fx
-      });
+      const sym = state.pair.replace('USDT', '');
+      const buyInr = a.buyUsd * fx;
+      const tp1Inr = a.tp1Usd * fx;
+      const slInr = a.slUsd * fx;
+      state.paperTrades.unshift({ sym, budget, buy: buyInr, tp1: tp1Inr });
       renderPaperTrades();
+      fetch('/api/trades', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: sym, budget_inr: budget, buy_price_inr: buyInr, target_inr: tp1Inr, stop_loss_inr: slInr })
+      }).catch(() => {});
       showToast(`Logged ₹${budget} paper spot buy on ${state.pair.replace('USDT', '')}`, 'success');
     });
 
