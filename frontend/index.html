@@ -523,34 +523,7 @@
               }
               state.pair = p;
               sel.value = p;
-          
-    document.getElementById('toggle-tds').addEventListener('change', updateInvestmentCalc);
-    document.getElementById('tg-test-btn').addEventListener('click', async () => {
-      try {
-        const r = await fetch('/api/alerts/test', { method: 'POST' });
-        const d = await r.json();
-        showToast(d.sent ? 'Telegram alert sent for ' + d.coin : (d.detail || 'Telegram not configured'), d.sent ? 'success' : 'info');
-      } catch (_) {
-        showToast('Connect backend to test Telegram alerts', 'info');
-      }
-    });
-
-    async function loadPersistedTrades() {
-      try {
-        const r = await fetch('/api/trades');
-        if (!r.ok) return;
-        const d = await r.json();
-        if (Array.isArray(d.trades) && d.trades.length) {
-          state.paperTrades = d.trades.map(t => ({
-            sym: t.symbol, budget: t.budget_inr, buy: t.buy_price_inr, tp1: t.target_inr
-          }));
-          renderPaperTrades();
-        }
-      } catch (_) {}
-    }
-    loadPersistedTrades();
-
-    fetchMarketData();
+              fetchMarketData();
               showToast('Loaded ' + p.replace('USDT', '') + ' / INR');
             });
           });
@@ -763,7 +736,7 @@
       const buyInr = a.buyUsd * fx;
       const qty = buyInr > 0 ? budgetInr / buyInr : 0;
       const deductTax = document.getElementById('toggle-tds')?.checked;
-      const sellMult = deductTax ? 0.988 : 1.0; // 1% TDS + 0.2% round-trip fee
+      const sellMult = deductTax ? 0.988 : 1.0;
       const p1 = qty * (a.tp1Usd * fx * sellMult - buyInr);
       const p2 = qty * (a.tp2Usd * fx * sellMult - buyInr);
       const loss = qty * (buyInr - a.slUsd * fx * sellMult);
@@ -977,6 +950,32 @@
     });
 
     fetchMarketData();
+
+    document.getElementById('toggle-tds').addEventListener('change', updateInvestmentCalc);
+    document.getElementById('tg-test-btn').addEventListener('click', async () => {
+      try {
+        const r = await fetch('/api/alerts/test', { method: 'POST' });
+        const d = await r.json();
+        showToast(d.sent ? 'Telegram alert sent for ' + d.coin : (d.detail || 'Telegram not configured'), d.sent ? 'success' : 'info');
+      } catch (_) {
+        showToast('Connect backend to test Telegram alerts', 'info');
+      }
+    });
+
+    async function loadPersistedTrades() {
+      try {
+        const r = await fetch('/api/trades');
+        if (!r.ok) return;
+        const d = await r.json();
+        if (Array.isArray(d.trades) && d.trades.length) {
+          state.paperTrades = d.trades.map(t => ({
+            sym: t.symbol, budget: t.budget_inr, buy: t.buy_price_inr, tp1: t.target_inr
+          }));
+          renderPaperTrades();
+        }
+      } catch (_) {}
+    }
+    loadPersistedTrades();
   </script>
 </body>
 </html>
