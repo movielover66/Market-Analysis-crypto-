@@ -42,6 +42,10 @@
               <span id="feed-dot" class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
               <span id="feed-text">Connecting...</span>
             </span>
+            <span id="api-badge" class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-800 text-slate-300 border border-slate-700">
+              <span id="api-dot" class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+              <span id="api-text">API: Checking...</span>
+            </span>
           </div>
           <p class="text-[11px] text-slate-400 hidden sm:block">Spot Delivery Only · 7D/10D/30D Breakout Scanner · US Macro &amp; News Intel</p>
         </div>
@@ -171,6 +175,10 @@
 
           <!-- Tab 2: US Macro & News Intelligence -->
           <div id="tab-news" class="tab-panel hidden space-y-3">
+            <div id="live-news-banner" class="bg-slate-900/80 border border-slate-800 rounded-lg p-3 text-xs text-slate-300">
+              Loading live Fear &amp; Greed + Gemini AI News Summary from backend...
+            </div>
+            <div id="live-headlines" class="space-y-1.5 text-xs"></div>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5" id="macro-cards">
               <div class="bg-slate-900/70 border border-slate-800 rounded-lg p-3">
                 <div class="flex items-center justify-between">
@@ -451,6 +459,99 @@
       renderChart();
       renderUI();
       renderScanner();
+      fetchBackendAPIs();
+    }
+
+    async function fetchBackendAPIs() {
+      const apiBadge = document.getElementById('api-badge');
+      const apiDot = document.getElementById('api-dot');
+      const apiText = document.getElementById('api-text');
+
+      try {
+        const [scanRes, newsRes] = await Promise.all([
+          fetch('/api/scanner?limit=25'),
+          fetch('/api/news-macro')
+        ]);
+
+        if (!scanRes.ok) throw new Error('Scanner API error');
+        const scanData = await scanRes.json();
+
+        if (scanData && Array.isArray(scanData.coins) && scanData.coins.length) {
+          // Render live 25-coin scanner from CoinGecko + CoinDCX INR
+          const body = document.getElementById('scanner-body');
+          body.innerHTML = scanData.coins.map(c => {
+            const pairGuess = c.symbol + 'USDT';
+            const active = pairGuess === state.pair;
+            const sigCls = c.signal === 'Breakout Momentum' || c.signal === 'Accumulation'
+              ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+              : c.signal === 'Oversold Bounce'
+              ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
+              : 'bg-slate-800 text-slate-300 border-slate-700';
+            return `
+              <tr data-pair="${pairGuess}" class="scanner-row cursor-pointer transition ${active ? 'bg-sky-950/40' : 'hover:bg-slate-900/60'}">
+                <td class="py-2.5 px-3 font-sans font-semibold text-white">${c.name} (${c.symbol})</td>
+                <td class="py-2.5 px-3">${fmtINR(c.price_inr)} <span class="text-[10px] text-slate-500 block">${c.price_source}</span></td>
+                <td class="py-2.5 px-3 ${c.change_7d_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${c.change_7d_pct >= 0 ? '+' : ''}${c.change_7d_pct}%</td>
+                <td class="py-2.5 px-3 ${c.change_10d_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${c.change_10d_pct >= 0 ? '+' : ''}${c.change_10d_pct}%</td>
+                <td class="py-2.5 px-3 ${c.change_30d_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${c.change_30d_pct >= 0 ? '+' : ''}${c.change_30d_pct}%</td>
+                <td class="py-2.5 px-3 font-sans">
+                  <span class="px-1.5 py-0.5 rounded border text-[10px] font-semibold mr-1.5 ${sigCls}">${c.signal} (${c.swing_score})</span>
+                </td>
+                <td class="py-2.5 px-3 font-sans"><span class="text-sky-400 font-medium hover:underline">Analyze</span></td>
+              </tr>`;
+          }).join('');
+
+          body.querySelectorAll('.scanner-row').forEach(row => {
+            row.addEventListener('click', () => {
+              const sel = document.getElementById('pair-select');
+              const p = row.dataset.pair;
+              if (![...sel.options].some(o => o.value === p)) {
+                const opt = document.createElement('option');
+                opt.value = p; opt.textContent = p.replace('USDT', '');
+                sel.appendChild(opt);
+              }
+              state.pair = p;
+              sel.value = p;
+              fetchMarketData();
+              showToast('Loaded ' + p.replace('USDT', '') + ' / INR');
+            });
+          });
+        }
+
+        if (newsRes.ok) {
+          const newsData = await newsRes.json();
+          const fg = newsData.fear_and_greed || {};
+          const gem = newsData.gemini_analysis || {};
+          const banner = document.getElementById('live-news-banner');
+
+          let gemHtml = '';
+          if (gem.summary) {
+            gemHtml = `<div class="mt-2 text-slate-200"><span class="px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 font-semibold mr-1.5">Gemini AI: ${gem.macro_bias || 'Neutral'}</span>${gem.summary}</div>`;
+          } else if (gem.note) {
+            gemHtml = `<div class="mt-2 text-amber-300">${gem.note}</div>`;
+          }
+          banner.innerHTML = `
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span class="font-semibold text-white">Live Fear &amp; Greed Index: <span class="text-sky-400 font-mono-num">${fg.value ?? '--'} (${fg.classification ?? 'N/A'})</span></span>
+              <span class="text-[11px] text-emerald-400">Live Backend Connected</span>
+            </div>
+            ${gemHtml}`;
+
+          const hlWrap = document.getElementById('live-headlines');
+          if (Array.isArray(newsData.headlines) && newsData.headlines.length) {
+            hlWrap.innerHTML = '<div class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mt-1">Latest Crypto &amp; US Macro Headlines</div>' +
+              newsData.headlines.slice(0, 5).map(h => `<div class="bg-slate-900/50 border border-slate-800/80 rounded px-2.5 py-1.5 text-slate-300">• ${h}</div>`).join('');
+          }
+        }
+
+        apiDot.className = 'w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse';
+        apiText.textContent = 'Backend API: Live';
+        apiBadge.className = 'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-950/60 text-emerald-300 border border-emerald-500/30';
+      } catch (_) {
+        apiDot.className = 'w-1.5 h-1.5 rounded-full bg-amber-400';
+        apiText.textContent = 'API: Standalone Mode';
+        apiBadge.className = 'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-950/60 text-amber-300 border border-amber-500/30';
+      }
     }
 
     function calcEMA(closes, period) {
