@@ -336,6 +336,9 @@
           <div class="flex items-center justify-between gap-2">
             <h2 class="text-sm font-semibold text-white">Paper Spot Watchlist</h2>
             <div class="flex gap-1.5">
+              <button id="auto-scan-btn" type="button" class="px-2 py-1 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white text-[11px] font-medium transition">
+                Auto Buy
+              </button>
               <button id="briefing-btn" type="button" class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 text-[11px] font-medium transition">
                 Briefing
               </button>
@@ -878,7 +881,7 @@
         <div class="bg-slate-900/70 border border-slate-800 rounded-lg p-2 flex items-center justify-between">
           <div>
             <div class="font-semibold text-white">${t.sym} · ${fmtINR(t.budget)}</div>
-            <div class="text-[11px] text-slate-400">Buy @ ${fmtINR(t.buy)} → Target ${fmtINR(t.tp1)}</div>
+            <div class="text-[11px] text-slate-400">Buy @ ${fmtINR(t.buy)} → Target ${fmtINR(t.tp1)}</div><div class="text-[10px] text-sky-400 mt-0.5">Hold: ${t.hold || "1-2 Days"}${t.dur ? " · Closed in " + t.dur : ""}</div>
           </div>
           <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold ${t.status === 'WIN' ? 'bg-emerald-500/20 text-emerald-300' : t.status === 'LOSS' ? 'bg-rose-500/20 text-rose-300' : 'bg-sky-500/15 text-sky-300'}">${t.status || 'HOLDING'}</span>
         </div>`).join('');
@@ -958,6 +961,16 @@
     fetchMarketData();
 
     document.getElementById('toggle-tds').addEventListener('change', updateInvestmentCalc);
+    document.getElementById('auto-scan-btn').addEventListener('click', async () => {
+      try {
+        const r = await fetch('/api/alerts/auto-cycle', { method: 'POST' });
+        const d = await r.json();
+        showToast(d.auto_logged?.length ? 'Auto Buy logged: ' + d.auto_logged.join(', ') : 'No new 65+ setups right now', d.auto_logged?.length ? 'success' : 'info');
+        loadPersistedTrades();
+      } catch (_) {
+        showToast('Connect backend for Auto Buy', 'info');
+      }
+    });
     document.getElementById('briefing-btn').addEventListener('click', async () => {
       try {
         const r = await fetch('/api/alerts/briefing', { method: 'POST' });
@@ -984,7 +997,7 @@
         const d = await r.json();
         if (Array.isArray(d.trades) && d.trades.length) {
           state.paperTrades = d.trades.map(t => ({
-            sym: t.symbol, budget: t.budget_inr, buy: t.buy_price_inr, tp1: t.target_inr, status: t.status
+            sym: t.symbol, budget: t.budget_inr, buy: t.buy_price_inr, tp1: t.target_inr, status: t.status, hold: t.hold_label, dur: t.duration_str
           }));
           renderPaperTrades();
         }
