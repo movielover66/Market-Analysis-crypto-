@@ -80,6 +80,18 @@
   </header>
 
   <main class="max-w-7xl mx-auto px-3 sm:px-5 py-4 space-y-4">
+    <!-- Top Market Switcher: Crypto vs Indian Stocks (NSE) -->
+    <div class="flex flex-wrap items-center justify-between gap-2 bg-[#111827] border border-slate-800 rounded-xl p-2">
+      <div class="inline-flex rounded-lg bg-slate-900 p-1 border border-slate-800">
+        <button id="mkt-crypto-btn" type="button" class="mkt-tab px-3.5 py-1.5 rounded-md text-xs font-semibold bg-sky-600 text-white transition">Crypto Spot (24/7)</button>
+        <button id="mkt-nse-btn" type="button" class="mkt-tab px-3.5 py-1.5 rounded-md text-xs font-semibold text-slate-400 hover:text-white transition">Indian Stocks (NSE)</button>
+      </div>
+      <div id="nse-regime-bar" class="hidden text-xs text-slate-300 flex flex-wrap items-center gap-3 px-2">
+        <span>Nifty 50: <strong id="nse-nifty" class="font-mono-num text-white">--</strong></span>
+        <span>India VIX: <strong id="nse-vix" class="font-mono-num text-amber-400">--</strong></span>
+        <span id="nse-regime-badge" class="px-2 py-0.5 rounded bg-slate-800 text-[11px] font-semibold">--</span>
+      </div>
+    </div>
     <!-- Top KPI Strip (INR) -->
     <section class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
       <div class="bg-[#111827] border border-slate-800/90 rounded-xl p-3">
@@ -1004,6 +1016,122 @@
       } catch (_) {}
     }
     loadPersistedTrades();
+
+    let activeMarket = 'CRYPTO';
+    let nseData = null;
+
+    document.getElementById('mkt-crypto-btn').addEventListener('click', () => {
+      activeMarket = 'CRYPTO';
+      document.getElementById('mkt-crypto-btn').className = 'mkt-tab px-3.5 py-1.5 rounded-md text-xs font-semibold bg-sky-600 text-white transition';
+      document.getElementById('mkt-nse-btn').className = 'mkt-tab px-3.5 py-1.5 rounded-md text-xs font-semibold text-slate-400 hover:text-white transition';
+      document.getElementById('nse-regime-bar').classList.add('hidden');
+      document.querySelector('label[for="toggle-tds"], #toggle-tds').parentElement.querySelector('span').textContent = 'Deduct 1% Indian TDS + 0.2% Spot Fee';
+      fetchMarketData();
+    });
+
+    document.getElementById('mkt-nse-btn').addEventListener('click', async () => {
+      activeMarket = 'NSE';
+      document.getElementById('mkt-nse-btn').className = 'mkt-tab px-3.5 py-1.5 rounded-md text-xs font-semibold bg-emerald-600 text-white transition';
+      document.getElementById('mkt-crypto-btn').className = 'mkt-tab px-3.5 py-1.5 rounded-md text-xs font-semibold text-slate-400 hover:text-white transition';
+      document.getElementById('nse-regime-bar').classList.remove('hidden');
+      document.getElementById('toggle-tds').parentElement.querySelector('span').textContent = 'Deduct 0.25% NSE Delivery (STT + Brokerage)';
+      await loadNSEMarket();
+    });
+
+    async function loadNSEMarket() {
+      showToast('Loading NSE Nifty 50 & Stock Scanner...');
+      try {
+        const [scanRes, newsRes] = await Promise.all([
+          fetch('/api/stocks/scanner'),
+          fetch('/api/stocks/news')
+        ]);
+        if (!scanRes.ok) throw new Error('NSE API unavailable');
+        nseData = await scanRes.json();
+
+        document.getElementById('nse-nifty').textContent = nseData.nifty_50?.toLocaleString('en-IN') || '--';
+        document.getElementById('nse-vix').textContent = nseData.india_vix ?? '--';
+        const rb = document.getElementById('nse-regime-badge');
+        rb.textContent = nseData.regime;
+        rb.className = 'px-2 py-0.5 rounded text-[11px] font-semibold ' + (nseData.regime.includes('Safe') ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300');
+
+        const body = document.getElementById('scanner-body');
+        body.innerHTML = nseData.stocks.map(s => {
+          const sigCls = s.signal.includes('Breakout') || s.signal.includes('Swing')
+            ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+            : s.signal.includes('Falling')
+            ? 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+            : 'bg-slate-800 text-slate-300 border-slate-700';
+          return `
+            <tr data-nsesym="${s.symbol}" class="nse-row cursor-pointer hover:bg-slate-900/60 transition">
+              <td class="py-2.5 px-3 font-sans font-semibold text-white">${s.name} (${s.short_symbol})</td>
+              <td class="py-2.5 px-3">${fmtINR(s.price_inr)}</td>
+              <td class="py-2.5 px-3 ${s.change_7d_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${s.change_7d_pct >= 0 ? '+' : ''}${s.change_7d_pct}%</td>
+              <td class="py-2.5 px-3 ${s.change_10d_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${s.change_10d_pct >= 0 ? '+' : ''}${s.change_10d_pct}%</td>
+              <td class="py-2.5 px-3 ${s.change_30d_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${s.change_30d_pct >= 0 ? '+' : ''}${s.change_30d_pct}%</td>
+              <td class="py-2.5 px-3 font-sans">
+                <span class="px-1.5 py-0.5 rounded border text-[10px] font-semibold mr-1.5 ${sigCls}">${s.signal} (${s.swing_score})</span>
+                <span class="text-[10px] text-slate-400 block mt-0.5">ADX ${s.adx_14} · RVOL ${s.rvol}x · RS ${s.rs_vs_nifty >= 0 ? '+' : ''}${s.rs_vs_nifty}%</span>
+              </td>
+              <td class="py-2.5 px-3 font-sans"><span class="text-emerald-400 font-medium hover:underline">Chart</span></td>
+            </tr>`;
+        }).join('');
+
+        body.querySelectorAll('.nse-row').forEach(r => {
+          r.addEventListener('click', () => loadNSEStockDetail(r.dataset.nsesym));
+        });
+
+        if (nseData.stocks.length) loadNSEStockDetail(nseData.stocks[0].symbol);
+
+        if (newsRes.ok) {
+          const nd = await newsRes.json();
+          const gem = nd.gemini_analysis || {};
+          document.getElementById('live-news-banner').innerHTML = `
+            <div class="font-semibold text-white">Indian Market News &amp; Macro (${nseData.regime})</div>
+            <div class="mt-1.5 text-slate-200">${gem.summary || gem.note || 'Latest NSE market headlines loaded.'}</div>`;
+          if (Array.isArray(nd.headlines)) {
+            document.getElementById('live-headlines').innerHTML = '<div class="text-[11px] font-semibold text-slate-400 uppercase mt-1">NSE / Market Headlines</div>' +
+              nd.headlines.slice(0, 5).map(h => `<div class="bg-slate-900/50 border border-slate-800 rounded px-2.5 py-1.5 text-slate-300">• ${h}</div>`).join('');
+          }
+        }
+      } catch (_) {
+        showToast('NSE Scanner requires deployed FastAPI backend', 'info');
+      }
+    }
+
+    async function loadNSEStockDetail(sym) {
+      const s = nseData?.stocks?.find(x => x.symbol === sym);
+      if (!s) return;
+      document.getElementById('chart-title').textContent = `${s.short_symbol} / INR (NSE Daily)`;
+      document.getElementById('kpi-price-inr').textContent = fmtINR(s.price_inr);
+      document.getElementById('kpi-price-usd').textContent = `RVOL: ${s.rvol}x · ADX: ${s.adx_14}`;
+      document.getElementById('kpi-score').textContent = `${s.swing_score} / 100`;
+      document.getElementById('kpi-verdict').textContent = s.signal;
+      document.getElementById('kpi-rsi').textContent = s.rsi_14;
+      document.getElementById('lvl-buy').textContent = fmtINR(s.price_inr);
+      document.getElementById('lvl-sl').textContent = fmtINR(s.stop_loss_inr);
+      document.getElementById('lvl-tp1').textContent = fmtINR(s.target_inr);
+      document.getElementById('lvl-tp2').textContent = fmtINR(s.target2_inr);
+
+      const budget = parseFloat(document.getElementById('invest-inr').value) || 5000;
+      const shares = Math.floor(budget / s.price_inr);
+      document.getElementById('calc-qty').textContent = `${shares} Shares`;
+      document.getElementById('calc-p1').textContent = `+${fmtINR(shares * (s.target_inr - s.price_inr) * 0.9975)}`;
+      document.getElementById('calc-p2').textContent = `+${fmtINR(shares * (s.target2_inr - s.price_inr) * 0.9975)}`;
+      document.getElementById('calc-loss').textContent = `-${fmtINR(shares * (s.price_inr - s.stop_loss_inr))}`;
+
+      try {
+        const cr = await fetch(`/api/stocks/chart/${sym}`);
+        if (cr.ok) {
+          const cd = await cr.json();
+          if (state.candleSeries && cd.candles?.length) {
+            state.candleSeries.setData(cd.candles);
+            state.ema20Series.setData([]);
+            state.ema50Series.setData([]);
+            state.chart.timeScale().fitContent();
+          }
+        }
+      } catch (_) {}
+    }
   </script>
 </body>
 </html>
