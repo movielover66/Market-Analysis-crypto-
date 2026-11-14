@@ -36,6 +36,21 @@ _LAST_ALERTED: Dict[str, float] = {}
 _LAST_BRIEFING_DATE: str = ""
 
 
+
+def format_duration(seconds: int) -> str:
+    seconds = max(60, int(seconds))
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    mins = rem // 60
+    parts = []
+    if days > 0:
+        parts.append(f"{days}d")
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if mins > 0 or not parts:
+        parts.append(f"{mins}m")
+    return " ".join(parts)
+
 def get_cache(key: str, ttl_sec: int = 300) -> Optional[Any]:
     entry = _CACHE.get(key)
     if entry and (time.time() - entry["ts"]) < ttl_sec:
@@ -334,11 +349,24 @@ async def build_scanner_data(limit: int = 25) -> Dict[str, Any]:
             else "Watchlist"
         )
 
+        if adx_4h >= 28 and rvol >= 1.3:
+            hold_label = "4-12 Hours (Fast)"
+            tp_mult, sl_mult = 1.045, 0.975
+        elif pct_30d > 0 and above_ema20:
+            hold_label = "3-5 Days (Trend)"
+            tp_mult, sl_mult = 1.09, 0.96
+        else:
+            hold_label = "1-2 Days (Swing)"
+            tp_mult, sl_mult = 1.06, 0.97
+
         results.append({
             "id": c.get("id"),
             "symbol": sym.upper(),
             "name": c.get("name"),
             "price_inr": round(price_inr, 2),
+            "target_inr": round(price_inr * tp_mult, 2),
+            "stop_loss_inr": round(price_inr * sl_mult, 2),
+            "hold_label": hold_label,
             "price_source": "CoinDCX INR" if dcx_price_inr else "CoinGecko/Binance INR",
             "change_24h_pct": round(pct_24h, 2),
             "change_7d_pct": round(pct_7d, 2),
@@ -387,10 +415,24 @@ async def fetch_all_trades() -> Tuple[str, List[Dict[str, Any]]]:
     return "Local JSON", _load_local_trades()
 
 
-async def update_trade_status(trade_id: str, new_status: str) -> None:
+async def update_trade_status(trade_id: str, new_status: str, exit_price: float = 0.0, duration_str: str = "") -> None:
+    now_ts = int(time.time())
     if SUPABASE_URL and SUPABASE_KEY:
         try:
             async with httpx.AsyncClient() as client:
+                r = await client.patch(
+                    f"{SUPABASE_URL}/rest/v1/paper_trades?id=eq.{trade_id}",
+                    headers={
+                        "apikey": SUPABASE_KEY,
+                        "Authorization": f"Bearer {SUPABASE_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={"status": new_status, "exit_price_inr": round(exit_price, 2), "closed_at": now_ts, "duration_str": duration_str},
+                    timeout=8.0,
+                )
+                if r.status_code in (200, 204):
+                    return
+                # Fallback if extra columns not added yet
                 await client.patch(
                     f"{SUPABASE_URL}/rest/v1/paper_trades?id=eq.{trade_id}",
                     headers={
@@ -408,7 +450,50 @@ async def update_trade_status(trade_id: str, new_status: str) -> None:
     for t in trades:
         if t.get("id") == trade_id:
             t["status"] = new_status
+            t["exit_price_inr"] = round(exit_price, 2)
+            t["closed_at"] = now_ts
+            t["duration_str"] = duration_str
     _save_local_trades(trades)
+
+
+async def insert_paper_trade(row: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    if SUPABASE_URL and SUPABASE_KEY:
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.post(
+                    f"{SUPABASE_URL}/rest/v1/paper_trades",
+                    headers={
+                        "apikey": SUPABASE_KEY,
+                        "Authorization": f"Bearer {SUPABASE_KEY}",
+                        "Content-Type": "application/json",
+                        "Prefer": "return=representation",
+                    },
+                    json=row,
+                    timeout=8.0,
+                )
+                if r.status_code in (200, 201):
+                    return "Supabase", r.json()[0]
+                # Fallback if v4 columns (hold_label) not added in SQL yet
+                base_row = {k: row[k] for k in ["id", "symbol", "budget_inr", "buy_price_inr", "target_inr", "stop_loss_inr", "status", "created_at"]}
+                r2 = await client.post(
+                    f"{SUPABASE_URL}/rest/v1/paper_trades",
+                    headers={
+                        "apikey": SUPABASE_KEY,
+                        "Authorization": f"Bearer {SUPABASE_KEY}",
+                        "Content-Type": "application/json",
+                        "Prefer": "return=representation",
+                    },
+                    json=base_row,
+                    timeout=8.0,
+                )
+                if r2.status_code in (200, 201):
+                    return "Supabase", r2.json()[0]
+        except Exception:
+            pass
+    trades = _load_local_trades()
+    trades.insert(0, row)
+    _save_local_trades(trades[:100])
+    return "Local JSON", row
 
 
 async def check_open_trades_tp_sl():
@@ -430,18 +515,24 @@ async def check_open_trades_tp_sl():
         buy = float(t.get("buy_price_inr") or 1)
         budget = float(t.get("budget_inr") or 1000)
 
+        created_at = int(t.get("created_at") or time.time())
+        dur_str = format_duration(int(time.time()) - created_at)
+        planned = t.get("hold_label") or "1-2 Days"
+
         if tp > 0 and live_p >= tp:
-            await update_trade_status(t["id"], "WIN")
+            await update_trade_status(t["id"], "WIN", live_p, dur_str)
             pnl = budget * ((live_p - buy) / buy) * 0.988
             await send_telegram_message(
                 f"🎯 <b>Target Hit! ({sym})</b>\n"
+                f"Time Taken: <b>{dur_str}</b> (Planned: {planned})\n"
                 f"Exit: ₹{live_p:,.2f} | Est. Net Profit: <b>+₹{pnl:,.2f}</b>"
             )
         elif sl > 0 and live_p <= sl:
-            await update_trade_status(t["id"], "LOSS")
+            await update_trade_status(t["id"], "LOSS", live_p, dur_str)
             pnl = budget * ((live_p - buy) / buy)
             await send_telegram_message(
                 f"🛑 <b>Stop-Loss Hit ({sym})</b>\n"
+                f"Time Taken: <b>{dur_str}</b> (Planned: {planned})\n"
                 f"Exit: ₹{live_p:,.2f} | Loss: <b>₹{pnl:,.2f}</b>"
             )
 
@@ -468,6 +559,40 @@ async def build_and_send_briefing() -> Dict[str, Any]:
     return {"sent": ok, "picks": len(top_picks)}
 
 
+
+async def run_auto_signal_cycle(min_score: float = 68.0) -> Dict[str, Any]:
+    data = await build_scanner_data(limit=25)
+    _, existing = await fetch_all_trades()
+    holding_syms = {t.get("symbol", "").upper() for t in existing if t.get("status") == "HOLDING"}
+
+    candidates = [
+        c for c in data["coins"]
+        if c["swing_score"] >= min_score and c["symbol"] not in holding_syms and "Falling Knife" not in c["signal"]
+    ][:2]
+
+    logged = []
+    for c in candidates:
+        row = {
+            "id": str(uuid.uuid4())[:8],
+            "symbol": c["symbol"],
+            "budget_inr": 1000.0,
+            "buy_price_inr": c["price_inr"],
+            "target_inr": c["target_inr"],
+            "stop_loss_inr": c["stop_loss_inr"],
+            "hold_label": c["hold_label"],
+            "status": "HOLDING",
+            "created_at": int(time.time()),
+        }
+        await insert_paper_trade(row)
+        logged.append(c["symbol"])
+        await send_telegram_message(
+            f"🟢 <b>AUTO BUY SIGNAL (Added to Paper)</b>\n"
+            f"Coin: <b>{c['name']} ({c['symbol']})</b> | Score: <b>{c['swing_score']}</b>\n"
+            f"Buy: ₹{c['price_inr']:,.2f} | Hold: <b>{c['hold_label']}</b>\n"
+            f"Target: ₹{c['target_inr']:,.2f} | SL: ₹{c['stop_loss_inr']:,.2f}"
+        )
+    return {"checked": len(data["coins"]), "auto_logged": logged}
+
 async def background_monitor_loop():
     """Runs every 5 min: checks TP/SL on HOLDING trades, 8 AM IST Briefing, & 2h 75+ Breakout Alerts."""
     global _LAST_BRIEFING_DATE
@@ -483,25 +608,10 @@ async def background_monitor_loop():
                 _LAST_BRIEFING_DATE = today_str
                 await build_and_send_briefing()
 
-            # Every 2 hours: high-conviction 75+ breakout alert (Anti-Falling-Knife filtered)
+            # Every 2 hours: Auto Buy Signal -> Auto Paper Work + Telegram Alert
             if time.time() - last_scan_ts >= 7200:
                 last_scan_ts = time.time()
-                data = await build_scanner_data(limit=25)
-                top = [c for c in data["coins"] if c["swing_score"] >= 75][:3]
-                now = time.time()
-                lines = []
-                for c in top:
-                    if now - _LAST_ALERTED.get(c["symbol"], 0) > 21600:
-                        _LAST_ALERTED[c["symbol"]] = now
-                        lines.append(
-                            f"• <b>{c['symbol']}</b>: ₹{c['price_inr']:,.2f} | Score <b>{c['swing_score']}</b> ({c['signal']})\n"
-                            f"  4H ADX: {c['adx_4h']} | RS vs BTC: {c['rs_vs_btc']}%"
-                        )
-                if lines:
-                    await send_telegram_message(
-                        f"🚀 <b>ApexQuant v3 Confirmed Breakout Alert</b>\n"
-                        f"BTC Dominance: {data['btc_dominance']}%\n\n" + "\n".join(lines)
-                    )
+                await run_auto_signal_cycle()
         except Exception:
             pass
         await asyncio.sleep(300)
@@ -645,6 +755,12 @@ class PaperTradeIn(BaseModel):
     buy_price_inr: float
     target_inr: float
     stop_loss_inr: float
+    hold_label: str = "1-2 Days (Swing)"
+
+
+@app.post("/api/alerts/auto-cycle")
+async def trigger_auto_cycle():
+    return await run_auto_signal_cycle(min_score=65.0)
 
 
 @app.get("/api/trades")
@@ -662,32 +778,12 @@ async def create_trade(trade: PaperTradeIn):
         "buy_price_inr": round(trade.buy_price_inr, 2),
         "target_inr": round(trade.target_inr, 2),
         "stop_loss_inr": round(trade.stop_loss_inr, 2),
+        "hold_label": trade.hold_label,
         "status": "HOLDING",
         "created_at": int(time.time()),
     }
-    if SUPABASE_URL and SUPABASE_KEY:
-        try:
-            async with httpx.AsyncClient() as client:
-                r = await client.post(
-                    f"{SUPABASE_URL}/rest/v1/paper_trades",
-                    headers={
-                        "apikey": SUPABASE_KEY,
-                        "Authorization": f"Bearer {SUPABASE_KEY}",
-                        "Content-Type": "application/json",
-                        "Prefer": "return=representation",
-                    },
-                    json=row,
-                    timeout=8.0,
-                )
-                if r.status_code in (200, 201):
-                    return {"storage": "Supabase", "trade": r.json()[0]}
-        except Exception:
-            pass
-
-    trades = _load_local_trades()
-    trades.insert(0, row)
-    _save_local_trades(trades[:50])
-    return {"storage": "Local JSON", "trade": row}
+    storage, saved = await insert_paper_trade(row)
+    return {"storage": storage, "trade": saved}
 
 
 @app.get("/api/trades/export")
