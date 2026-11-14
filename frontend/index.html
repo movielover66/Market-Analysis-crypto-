@@ -52,7 +52,7 @@
       </div>
 
       <div class="flex flex-wrap items-center gap-2">
-        <div class="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded-lg px-2 py-1 text-xs">
+        <div id="usdinr-box" class="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded-lg px-2 py-1 text-xs">
           <span class="text-slate-400">1 USD =</span>
           <input id="usdinr-input" type="number" step="0.1" value="94.22" class="w-14 bg-transparent text-emerald-400 font-mono-num font-semibold focus:outline-none" aria-label="USD to INR Rate" />
           <span class="text-slate-400">₹</span>
@@ -287,7 +287,7 @@
 
           <div class="grid grid-cols-2 gap-2 text-xs">
             <div class="bg-slate-900/80 border border-slate-800 rounded-lg p-2.5">
-              <div class="text-slate-400 text-[11px]">Ideal Buy Zone</div>
+              <div id="lvl-buy-label" class="text-slate-400 text-[11px]">Ideal Buy Zone</div>
               <div id="lvl-buy" class="font-mono-num font-semibold text-white text-sm mt-0.5">--</div>
             </div>
             <div class="bg-slate-900/80 border border-slate-800 rounded-lg p-2.5">
@@ -750,6 +750,21 @@
     }
 
     function updateInvestmentCalc() {
+      if (activeMarket === 'NSE' && state.nseSelected) {
+        const s = state.nseSelected;
+        const useBuy = s.liveCallPrice || s.price_inr;
+        const useTp1 = s.liveTp1 || s.target_inr;
+        const useTp2 = s.liveTp2 || s.target2_inr;
+        const useSl = s.liveSl || s.stop_loss_inr;
+        const budget = Math.max(0, parseFloat(document.getElementById('invest-inr').value) || 0);
+        const shares = Math.max(0, Math.floor(budget / useBuy));
+        const feeMult = document.getElementById('toggle-tds')?.checked ? 0.9975 : 1.0;
+        document.getElementById('calc-qty').textContent = `${shares} Shares`;
+        document.getElementById('calc-p1').textContent = `+${fmtINR(shares * Math.abs(useTp1 - useBuy) * feeMult)}`;
+        document.getElementById('calc-p2').textContent = `+${fmtINR(shares * Math.abs(useTp2 - useBuy) * feeMult)}`;
+        document.getElementById('calc-loss').textContent = `-${fmtINR(shares * Math.abs(useBuy - useSl))}`;
+        return;
+      }
       const a = state.analysis;
       if (!a) return;
       const fx = state.usdInr;
@@ -893,7 +908,7 @@
         <div class="bg-slate-900/70 border border-slate-800 rounded-lg p-2 flex items-center justify-between">
           <div>
             <div class="font-semibold text-white"><span class="text-[10px] px-1 py-0.5 rounded bg-slate-800 text-slate-300 mr-1">${t.market || "CRYPTO"}</span>${t.sym} · ${fmtINR(t.budget)}</div>
-            <div class="text-[11px] text-slate-400">Buy @ ${fmtINR(t.buy)} → Target ${fmtINR(t.tp1)}</div><div class="text-[10px] text-sky-400 mt-0.5">Hold: ${t.hold || "1-2 Days"}${t.dur ? " · Closed in " + t.dur : ""}</div>
+            <div class="text-[11px] text-slate-400"><span class="${t.tp1 < t.buy ? 'text-rose-400 font-semibold' : 'text-emerald-400 font-semibold'}">${t.tp1 < t.buy ? 'SELL' : 'BUY'}</span> @ ${fmtINR(t.buy)} → Target ${fmtINR(t.tp1)}</div><div class="text-[10px] text-sky-400 mt-0.5">Hold: ${t.hold || "1-2 Days"}${t.dur ? " · Closed in " + t.dur : ""}</div>
           </div>
           <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold ${t.status === 'WIN' ? 'bg-emerald-500/20 text-emerald-300' : t.status === 'LOSS' ? 'bg-rose-500/20 text-rose-300' : 'bg-sky-500/15 text-sky-300'}">${t.status || 'HOLDING'}</span>
         </div>`).join('');
@@ -906,8 +921,12 @@
     });
 
     document.getElementById('pair-select').addEventListener('change', (e) => {
-      state.pair = e.target.value;
-      fetchMarketData();
+      if (activeMarket === 'NSE') {
+        loadNSEStockDetail(e.target.value);
+      } else {
+        state.pair = e.target.value;
+        fetchMarketData();
+      }
     });
 
     document.querySelectorAll('.tf-mode-btn').forEach(btn => {
@@ -950,7 +969,7 @@
     });
 
     document.getElementById('run-bt-btn').addEventListener('click', runSpotBacktest);
-    document.getElementById('refresh-btn').addEventListener('click', () => { fetchMarketData(); showToast('Refreshed INR prices'); });
+    document.getElementById('refresh-btn').addEventListener('click', () => { if (activeMarket === 'NSE') loadNSEMarket(); else fetchMarketData(); showToast('Refreshed INR prices'); });
 
     document.getElementById('add-paper-btn').addEventListener('click', () => {
       const budget = parseFloat(document.getElementById('invest-inr').value) || 1000;
@@ -1039,12 +1058,24 @@
     let activeMarket = 'CRYPTO';
     let nseData = null;
 
+    const CRYPTO_OPTIONS_HTML = document.getElementById('pair-select').innerHTML;
+
     document.getElementById('mkt-crypto-btn').addEventListener('click', () => {
       activeMarket = 'CRYPTO';
       document.getElementById('mkt-crypto-btn').className = 'mkt-tab px-3.5 py-1.5 rounded-md text-xs font-semibold bg-sky-600 text-white transition';
       document.getElementById('mkt-nse-btn').className = 'mkt-tab px-3.5 py-1.5 rounded-md text-xs font-semibold text-slate-400 hover:text-white transition';
       document.getElementById('nse-regime-bar').classList.add('hidden');
-      document.querySelector('label[for="toggle-tds"], #toggle-tds').parentElement.querySelector('span').textContent = 'Deduct 1% Indian TDS + 0.2% Spot Fee';
+      document.getElementById('usdinr-box').classList.remove('hidden');
+      document.getElementById('pair-select').innerHTML = CRYPTO_OPTIONS_HTML;
+      document.getElementById('pair-select').value = state.pair;
+      document.getElementById('lvl-buy-label').textContent = 'Ideal Buy Zone';
+      const tfBtns = document.querySelectorAll('.tf-mode-btn');
+      if (tfBtns.length >= 3) {
+        tfBtns[0].textContent = 'Intraday (1H)';
+        tfBtns[1].textContent = '2-3 Day Swing (4H)';
+        tfBtns[2].textContent = '1W-1M Trend (1D)';
+      }
+      document.getElementById('toggle-tds').parentElement.querySelector('span').textContent = 'Deduct 1% Indian TDS + 0.2% Spot Fee';
       fetchMarketData();
     });
 
@@ -1053,6 +1084,13 @@
       document.getElementById('mkt-nse-btn').className = 'mkt-tab px-3.5 py-1.5 rounded-md text-xs font-semibold bg-emerald-600 text-white transition';
       document.getElementById('mkt-crypto-btn').className = 'mkt-tab px-3.5 py-1.5 rounded-md text-xs font-semibold text-slate-400 hover:text-white transition';
       document.getElementById('nse-regime-bar').classList.remove('hidden');
+      document.getElementById('usdinr-box').classList.add('hidden');
+      const tfBtns = document.querySelectorAll('.tf-mode-btn');
+      if (tfBtns.length >= 3) {
+        tfBtns[0].textContent = 'Intraday (15m)';
+        tfBtns[1].textContent = 'Swing (1D)';
+        tfBtns[2].textContent = 'Positional (1D)';
+      }
       document.getElementById('toggle-tds').parentElement.querySelector('span').textContent = 'Deduct 0.25% NSE Delivery (STT + Brokerage)';
       await loadNSEMarket();
     });
@@ -1099,6 +1137,8 @@
           r.addEventListener('click', () => loadNSEStockDetail(r.dataset.nsesym));
         });
 
+        const sel = document.getElementById('pair-select');
+        sel.innerHTML = nseData.stocks.map(s => `<option value="${s.symbol}">${s.short_symbol} (${s.name})</option>`).join('');
         if (nseData.stocks.length) loadNSEStockDetail(nseData.stocks[0].symbol);
 
         if (newsRes.ok) {
@@ -1153,7 +1193,7 @@
             useTp1 = cd.tp1;
             useTp2 = cd.tp2;
             useRsi = cd.rsi_14;
-            s.liveCallPrice = useBuy; s.liveSl = useSl; s.liveTp1 = useTp1;
+            s.liveCallPrice = useBuy; s.liveSl = useSl; s.liveTp1 = useTp1; s.liveTp2 = useTp2;
           }
           if (state.candleSeries && cd.candles?.length) {
             state.candleSeries.setData(cd.candles);
@@ -1171,17 +1211,14 @@
       sb.textContent = useCall;
       sb.className = 'px-2 py-0.5 rounded text-[11px] font-semibold ' + (useCall.includes('BUY') ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : useCall.includes('SELL') ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' : 'bg-amber-500/20 text-amber-300 border border-amber-500/30');
 
+      document.getElementById('pair-select').value = s.symbol;
+      document.getElementById('lvl-buy-label').textContent = useCall.includes('SELL') ? 'Entry (SELL)' : 'Ideal Buy Zone';
       document.getElementById('lvl-buy').textContent = fmtINR(useBuy);
       document.getElementById('lvl-sl').textContent = fmtINR(useSl);
       document.getElementById('lvl-tp1').textContent = fmtINR(useTp1);
       document.getElementById('lvl-tp2').textContent = fmtINR(useTp2);
 
-      const budget = parseFloat(document.getElementById('invest-inr').value) || 5000;
-      const shares = Math.max(1, Math.floor(budget / useBuy));
-      document.getElementById('calc-qty').textContent = `${shares} Shares`;
-      document.getElementById('calc-p1').textContent = `+${fmtINR(shares * Math.abs(useTp1 - useBuy) * 0.9975)}`;
-      document.getElementById('calc-p2').textContent = `+${fmtINR(shares * Math.abs(useTp2 - useBuy) * 0.9975)}`;
-      document.getElementById('calc-loss').textContent = `-${fmtINR(shares * Math.abs(useBuy - useSl))}`;
+      updateInvestmentCalc();
     }
   </script>
 </body>
