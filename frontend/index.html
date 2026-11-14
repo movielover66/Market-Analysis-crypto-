@@ -892,7 +892,7 @@
       wrap.innerHTML = state.paperTrades.map(t => `
         <div class="bg-slate-900/70 border border-slate-800 rounded-lg p-2 flex items-center justify-between">
           <div>
-            <div class="font-semibold text-white">${t.sym} · ${fmtINR(t.budget)}</div>
+            <div class="font-semibold text-white"><span class="text-[10px] px-1 py-0.5 rounded bg-slate-800 text-slate-300 mr-1">${t.market || "CRYPTO"}</span>${t.sym} · ${fmtINR(t.budget)}</div>
             <div class="text-[11px] text-slate-400">Buy @ ${fmtINR(t.buy)} → Target ${fmtINR(t.tp1)}</div><div class="text-[10px] text-sky-400 mt-0.5">Hold: ${t.hold || "1-2 Days"}${t.dur ? " · Closed in " + t.dur : ""}</div>
           </div>
           <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold ${t.status === 'WIN' ? 'bg-emerald-500/20 text-emerald-300' : t.status === 'LOSS' ? 'bg-rose-500/20 text-rose-300' : 'bg-sky-500/15 text-sky-300'}">${t.status || 'HOLDING'}</span>
@@ -918,7 +918,8 @@
             ? 'tf-mode-btn px-2.5 py-1 text-xs font-medium rounded-md transition bg-sky-600 text-white'
             : 'tf-mode-btn px-2.5 py-1 text-xs font-medium rounded-md transition text-slate-400 hover:text-white';
         });
-        fetchMarketData();
+        if (activeMarket === 'NSE' && state.nseSelected) loadNSEStockDetail(state.nseSelected.symbol);
+        else fetchMarketData();
       });
     });
 
@@ -940,7 +941,7 @@
       document.getElementById(id).addEventListener('change', renderChart);
     });
 
-    document.getElementById('invest-inr').addEventListener('input', updateInvestmentCalc);
+    document.getElementById('invest-inr').addEventListener('input', () => { if (activeMarket === 'NSE' && state.nseSelected) loadNSEStockDetail(state.nseSelected.symbol); else updateInvestmentCalc(); });
     document.querySelectorAll('.amt-preset').forEach(btn => {
       btn.addEventListener('click', () => {
         document.getElementById('invest-inr').value = btn.dataset.amt;
@@ -952,22 +953,39 @@
     document.getElementById('refresh-btn').addEventListener('click', () => { fetchMarketData(); showToast('Refreshed INR prices'); });
 
     document.getElementById('add-paper-btn').addEventListener('click', () => {
+      const budget = parseFloat(document.getElementById('invest-inr').value) || 1000;
+      if (activeMarket === 'NSE' && state.nseSelected) {
+        const s = state.nseSelected;
+        const sym = s.short_symbol;
+        const buyInr = s.liveCallPrice || s.price_inr;
+        const tp1Inr = s.liveTp1 || s.target_inr;
+        const slInr = s.liveSl || s.stop_loss_inr;
+        const hold = state.tf === '1h' ? 'Intraday (Same Day)' : s.hold_label;
+        state.paperTrades.unshift({ sym, market: 'NSE', budget, buy: buyInr, tp1: tp1Inr, status: 'HOLDING', hold });
+        renderPaperTrades();
+        fetch('/api/trades', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbol: sym, market: 'NSE', budget_inr: budget, buy_price_inr: buyInr, target_inr: tp1Inr, stop_loss_inr: slInr, hold_label: hold })
+        }).catch(() => {});
+        showToast(`Logged ₹${budget} NSE Paper Trade on ${sym}`, 'success');
+        return;
+      }
       const a = state.analysis;
       if (!a) return;
       const fx = state.usdInr;
-      const budget = parseFloat(document.getElementById('invest-inr').value) || 1000;
       const sym = state.pair.replace('USDT', '');
       const buyInr = a.buyUsd * fx;
       const tp1Inr = a.tp1Usd * fx;
       const slInr = a.slUsd * fx;
-      state.paperTrades.unshift({ sym, budget, buy: buyInr, tp1: tp1Inr });
+      state.paperTrades.unshift({ sym, market: 'CRYPTO', budget, buy: buyInr, tp1: tp1Inr, status: 'HOLDING', hold: '1-2 Days (Swing)' });
       renderPaperTrades();
       fetch('/api/trades', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol: sym, budget_inr: budget, buy_price_inr: buyInr, target_inr: tp1Inr, stop_loss_inr: slInr })
+        body: JSON.stringify({ symbol: sym, market: 'CRYPTO', budget_inr: budget, buy_price_inr: buyInr, target_inr: tp1Inr, stop_loss_inr: slInr })
       }).catch(() => {});
-      showToast(`Logged ₹${budget} paper spot buy on ${state.pair.replace('USDT', '')}`, 'success');
+      showToast(`Logged ₹${budget} Crypto Paper Buy on ${sym}`, 'success');
     });
 
     fetchMarketData();
@@ -975,7 +993,8 @@
     document.getElementById('toggle-tds').addEventListener('change', updateInvestmentCalc);
     document.getElementById('auto-scan-btn').addEventListener('click', async () => {
       try {
-        const r = await fetch('/api/alerts/auto-cycle', { method: 'POST' });
+        const endpoint = activeMarket === 'NSE' ? '/api/stocks/auto-cycle' : '/api/alerts/auto-cycle';
+        const r = await fetch(endpoint, { method: 'POST' });
         const d = await r.json();
         showToast(d.auto_logged?.length ? 'Auto Buy logged: ' + d.auto_logged.join(', ') : 'No new 65+ setups right now', d.auto_logged?.length ? 'success' : 'info');
         loadPersistedTrades();
@@ -1009,7 +1028,7 @@
         const d = await r.json();
         if (Array.isArray(d.trades) && d.trades.length) {
           state.paperTrades = d.trades.map(t => ({
-            sym: t.symbol, budget: t.budget_inr, buy: t.buy_price_inr, tp1: t.target_inr, status: t.status, hold: t.hold_label, dur: t.duration_str
+            sym: t.symbol, market: t.market || "CRYPTO", budget: t.budget_inr, buy: t.buy_price_inr, tp1: t.target_inr, status: t.status, hold: t.hold_label, dur: t.duration_str
           }));
           renderPaperTrades();
         }
@@ -1101,28 +1120,41 @@
     async function loadNSEStockDetail(sym) {
       const s = nseData?.stocks?.find(x => x.symbol === sym);
       if (!s) return;
-      document.getElementById('chart-title').textContent = `${s.short_symbol} / INR (NSE Daily)`;
+      state.nseSelected = s;
+
+      const tfParam = state.tf === '1h' ? '15m' : (state.tf === '4h' ? '1d' : '1d');
+      const modeLabel = tfParam === '15m' ? 'Intraday 15m' : 'Swing Daily';
+      document.getElementById('chart-title').textContent = `${s.short_symbol} / INR (NSE ${modeLabel})`;
+
+      // Update all 6 KPI cards for NSE Stock
       document.getElementById('kpi-price-inr').textContent = fmtINR(s.price_inr);
       document.getElementById('kpi-price-usd').textContent = `RVOL: ${s.rvol}x · ADX: ${s.adx_14}`;
       document.getElementById('kpi-score').textContent = `${s.swing_score} / 100`;
       document.getElementById('kpi-verdict').textContent = s.signal;
-      document.getElementById('kpi-rsi').textContent = s.rsi_14;
-      document.getElementById('lvl-buy').textContent = fmtINR(s.price_inr);
-      document.getElementById('lvl-sl').textContent = fmtINR(s.stop_loss_inr);
-      document.getElementById('lvl-tp1').textContent = fmtINR(s.target_inr);
-      document.getElementById('lvl-tp2').textContent = fmtINR(s.target2_inr);
+      const d7El = document.getElementById('kpi-7d');
+      d7El.textContent = `7D: ${s.change_7d_pct >= 0 ? '+' : ''}${s.change_7d_pct}%`;
+      d7El.className = `text-sm sm:text-base font-semibold font-mono-num mt-0.5 ${s.change_7d_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+      document.getElementById('kpi-30d').textContent = `30D: ${s.change_30d_pct >= 0 ? '+' : ''}${s.change_30d_pct}%`;
 
-      const budget = parseFloat(document.getElementById('invest-inr').value) || 5000;
-      const shares = Math.floor(budget / s.price_inr);
-      document.getElementById('calc-qty').textContent = `${shares} Shares`;
-      document.getElementById('calc-p1').textContent = `+${fmtINR(shares * (s.target_inr - s.price_inr) * 0.9975)}`;
-      document.getElementById('calc-p2').textContent = `+${fmtINR(shares * (s.target2_inr - s.price_inr) * 0.9975)}`;
-      document.getElementById('calc-loss').textContent = `-${fmtINR(shares * (s.price_inr - s.stop_loss_inr))}`;
+      document.getElementById('kpi-macro').textContent = `Nifty: ${nseData.nifty_50?.toLocaleString('en-IN') || '--'}`;
+      document.getElementById('kpi-etf').textContent = `VIX: ${nseData.india_vix ?? '--'}`;
+      document.getElementById('kpi-btcd').textContent = `RS vs Nifty: ${s.rs_vs_nifty >= 0 ? '+' : ''}${s.rs_vs_nifty}%`;
+
+      let useBuy = s.price_inr, useSl = s.stop_loss_inr, useTp1 = s.target_inr, useTp2 = s.target2_inr, useCall = s.signal, useRsi = s.rsi_14;
 
       try {
-        const cr = await fetch(`/api/stocks/chart/${sym}`);
+        const cr = await fetch(`/api/stocks/chart/${sym}?tf=${tfParam}`);
         if (cr.ok) {
           const cd = await cr.json();
+          if (cd.call) {
+            useCall = cd.call;
+            useBuy = cd.price_inr;
+            useSl = cd.sl;
+            useTp1 = cd.tp1;
+            useTp2 = cd.tp2;
+            useRsi = cd.rsi_14;
+            s.liveCallPrice = useBuy; s.liveSl = useSl; s.liveTp1 = useTp1;
+          }
           if (state.candleSeries && cd.candles?.length) {
             state.candleSeries.setData(cd.candles);
             state.ema20Series.setData([]);
@@ -1131,6 +1163,25 @@
           }
         }
       } catch (_) {}
+
+      document.getElementById('kpi-rsi').textContent = useRsi;
+      document.getElementById('kpi-rsi-zone').textContent = useRsi < 35 ? 'Oversold' : useRsi > 70 ? 'Overbought' : 'Momentum Zone';
+
+      const sb = document.getElementById('setup-badge');
+      sb.textContent = useCall;
+      sb.className = 'px-2 py-0.5 rounded text-[11px] font-semibold ' + (useCall.includes('BUY') ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : useCall.includes('SELL') ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' : 'bg-amber-500/20 text-amber-300 border border-amber-500/30');
+
+      document.getElementById('lvl-buy').textContent = fmtINR(useBuy);
+      document.getElementById('lvl-sl').textContent = fmtINR(useSl);
+      document.getElementById('lvl-tp1').textContent = fmtINR(useTp1);
+      document.getElementById('lvl-tp2').textContent = fmtINR(useTp2);
+
+      const budget = parseFloat(document.getElementById('invest-inr').value) || 5000;
+      const shares = Math.max(1, Math.floor(budget / useBuy));
+      document.getElementById('calc-qty').textContent = `${shares} Shares`;
+      document.getElementById('calc-p1').textContent = `+${fmtINR(shares * Math.abs(useTp1 - useBuy) * 0.9975)}`;
+      document.getElementById('calc-p2').textContent = `+${fmtINR(shares * Math.abs(useTp2 - useBuy) * 0.9975)}`;
+      document.getElementById('calc-loss').textContent = `-${fmtINR(shares * Math.abs(useBuy - useSl))}`;
     }
   </script>
 </body>
