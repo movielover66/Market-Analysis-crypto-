@@ -336,9 +336,15 @@
           <div class="flex items-center justify-between gap-2">
             <h2 class="text-sm font-semibold text-white">Paper Spot Watchlist</h2>
             <div class="flex gap-1.5">
+              <button id="briefing-btn" type="button" class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-amber-300 text-[11px] font-medium transition">
+                Briefing
+              </button>
               <button id="tg-test-btn" type="button" class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sky-300 text-[11px] font-medium transition">
                 TG Alert
               </button>
+              <a href="/api/trades/export" download="apexquant_inr_trades.csv" class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-emerald-300 text-[11px] font-medium transition">
+                CSV
+              </a>
               <button id="add-paper-btn" type="button" class="px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold transition">
                 + Track Buy
               </button>
@@ -506,7 +512,7 @@
                 <td class="py-2.5 px-3 ${c.change_10d_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${c.change_10d_pct >= 0 ? '+' : ''}${c.change_10d_pct}%</td>
                 <td class="py-2.5 px-3 ${c.change_30d_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${c.change_30d_pct >= 0 ? '+' : ''}${c.change_30d_pct}%</td>
                 <td class="py-2.5 px-3 font-sans">
-                  <span class="px-1.5 py-0.5 rounded border text-[10px] font-semibold mr-1.5 ${sigCls}">${c.signal} (${c.swing_score})</span>
+                  <span class="px-1.5 py-0.5 rounded border text-[10px] font-semibold mr-1.5 ${sigCls}">${c.signal} (${c.swing_score})</span><span class="text-[10px] text-slate-400 block mt-0.5">ADX ${c.adx_4h ?? '--'} · RS ${c.rs_vs_btc >= 0 ? '+' : ''}${c.rs_vs_btc ?? '0'}%</span>
                 </td>
                 <td class="py-2.5 px-3 font-sans"><span class="text-sky-400 font-medium hover:underline">Analyze</span></td>
               </tr>`;
@@ -874,7 +880,7 @@
             <div class="font-semibold text-white">${t.sym} · ${fmtINR(t.budget)}</div>
             <div class="text-[11px] text-slate-400">Buy @ ${fmtINR(t.buy)} → Target ${fmtINR(t.tp1)}</div>
           </div>
-          <span class="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 text-[10px] font-semibold">HOLDING</span>
+          <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold ${t.status === 'WIN' ? 'bg-emerald-500/20 text-emerald-300' : t.status === 'LOSS' ? 'bg-rose-500/20 text-rose-300' : 'bg-sky-500/15 text-sky-300'}">${t.status || 'HOLDING'}</span>
         </div>`).join('');
     }
 
@@ -952,6 +958,15 @@
     fetchMarketData();
 
     document.getElementById('toggle-tds').addEventListener('change', updateInvestmentCalc);
+    document.getElementById('briefing-btn').addEventListener('click', async () => {
+      try {
+        const r = await fetch('/api/alerts/briefing', { method: 'POST' });
+        const d = await r.json();
+        showToast(d.sent ? 'Morning Briefing sent to Telegram!' : (d.detail || 'Telegram not configured'), d.sent ? 'success' : 'info');
+      } catch (_) {
+        showToast('Connect backend to send Briefing', 'info');
+      }
+    });
     document.getElementById('tg-test-btn').addEventListener('click', async () => {
       try {
         const r = await fetch('/api/alerts/test', { method: 'POST' });
@@ -969,7 +984,7 @@
         const d = await r.json();
         if (Array.isArray(d.trades) && d.trades.length) {
           state.paperTrades = d.trades.map(t => ({
-            sym: t.symbol, budget: t.budget_inr, buy: t.buy_price_inr, tp1: t.target_inr
+            sym: t.symbol, budget: t.budget_inr, buy: t.buy_price_inr, tp1: t.target_inr, status: t.status
           }));
           renderPaperTrades();
         }
