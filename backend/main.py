@@ -669,19 +669,25 @@ async def check_open_trades_tp_sl():
         dur_str = format_duration(int(time.time()) - int(t.get("created_at") or time.time()))
         planned = t.get("hold_label") or "1-2 Days"
 
-        if tp > 0 and live_p >= tp:
+        is_short = (tp > 0 and tp < buy)
+        hit_win = (live_p <= tp) if is_short else (tp > 0 and live_p >= tp)
+        hit_loss = (sl > 0 and live_p >= sl) if is_short else (sl > 0 and live_p <= sl)
+
+        if hit_win:
             await update_trade_status(t["id"], "WIN", live_p, dur_str)
-            pnl = budget * ((live_p - buy) / buy) * fee_mult
+            raw_ret = ((buy - live_p) / buy) if is_short else ((live_p - buy) / buy)
+            pnl = budget * raw_ret * fee_mult
             await send_telegram_message(
-                f"🎯 <b>Target Hit! ({sym})</b>\n"
+                f"🎯 <b>Target Hit! ({sym} {'SELL' if is_short else 'BUY'})</b>\n"
                 f"Time Taken: <b>{dur_str}</b> (Planned: {planned})\n"
                 f"Exit: ₹{live_p:,.2f} | Est. Net Profit: <b>+₹{pnl:,.2f}</b>"
             )
-        elif sl > 0 and live_p <= sl:
+        elif hit_loss:
             await update_trade_status(t["id"], "LOSS", live_p, dur_str)
-            pnl = budget * ((live_p - buy) / buy)
+            raw_ret = ((buy - live_p) / buy) if is_short else ((live_p - buy) / buy)
+            pnl = budget * raw_ret
             await send_telegram_message(
-                f"🛑 <b>Stop-Loss Hit ({sym})</b>\n"
+                f"🛑 <b>Stop-Loss Hit ({sym} {'SELL' if is_short else 'BUY'})</b>\n"
                 f"Time Taken: <b>{dur_str}</b> (Planned: {planned})\n"
                 f"Exit: ₹{live_p:,.2f} | Loss: <b>₹{pnl:,.2f}</b>"
             )
