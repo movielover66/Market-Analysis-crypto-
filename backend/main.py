@@ -846,16 +846,18 @@ async def get_nse_scanner():
 
 
 @app.get("/api/stocks/chart/{symbol}")
-async def get_nse_chart(symbol: str):
+async def get_nse_chart(symbol: str, tf: str = Query("1d")):
     sym = symbol if symbol.endswith(".NS") else f"{symbol}.NS"
-    cache_key = f"nse_chart_{sym}"
-    cached = get_cache(cache_key, ttl_sec=300)
+    period_map = {"15m": ("5d", "15m"), "1h": ("1mo", "1h"), "4h": ("4mo", "1d"), "1d": ("6mo", "1d")}
+    period, interval = period_map.get(tf, ("4mo", "1d"))
+    cache_key = f"nse_chart_{sym}_{interval}"
+    cached = get_cache(cache_key, ttl_sec=180)
     if cached:
         return cached
 
     def _fetch():
         t = yf.Ticker(sym)
-        hist = t.history(period="4mo", interval="1d")
+        hist = t.history(period=period, interval=interval)
         if hist.empty:
             return None
         candles = []
@@ -866,13 +868,43 @@ async def get_nse_chart(symbol: str):
                 "high": round(float(row["High"]), 2),
                 "low": round(float(row["Low"]), 2),
                 "close": round(float(row["Close"]), 2),
+                "v": float(row["Volume"] or 0),
             })
         return candles
 
-    candles = await asyncio.to_thread(_fetch)
-    if not candles:
+    raw_candles = await asyncio.to_thread(_fetch)
+    if not raw_candles:
         raise HTTPException(status_code=404, detail=f"NSE symbol {sym} not found")
-    payload = {"symbol": sym, "candles": candles}
+
+    closes = [c["close"] for c in raw_candles]
+    ema20 = calc_ema(closes, 20) or closes[-1]
+    rsi14 = calc_rsi(closes, 14) or 50.0
+    atr14 = calc_atr([{"o": c["open"], "h": c["high"], "l": c["low"], "c": c["close"], "v": c["v"]} for c in raw_candles], 14)
+
+    # Intraday / Swing Call (BUY / SELL / HOLD)
+    price = closes[-1]
+    if price > ema20 and rsi14 >= 52 and rsi14 <= 72:
+        call = "BUY"
+        sl = round(price - atr14 * 1.2, 2)
+        tp1 = round(price + atr14 * 1.8, 2)
+        tp2 = round(price + atr14 * 3.0, 2)
+    elif price < ema20 and rsi14 <= 45 and rsi14 >= 25:
+        call = "SELL (Intraday)" if interval in ("15m", "1h") else "WAIT / AVOID"
+        sl = round(price + atr14 * 1.2, 2)
+        tp1 = round(price - atr14 * 1.8, 2)
+        tp2 = round(price - atr14 * 3.0, 2)
+    else:
+        call = "HOLD / WAIT"
+        sl = round(price - atr14 * 1.5, 2)
+        tp1 = round(price + atr14 * 2.0, 2)
+        tp2 = round(price + atr14 * 3.5, 2)
+
+    candles = [{"time": c["time"], "open": c["open"], "high": c["high"], "low": c["low"], "close": c["close"]} for c in raw_candles]
+    payload = {
+        "symbol": sym, "interval": interval, "call": call,
+        "price_inr": round(price, 2), "rsi_14": round(rsi14, 1),
+        "sl": sl, "tp1": tp1, "tp2": tp2, "candles": candles
+    }
     set_cache(cache_key, payload)
     return payload
 
