@@ -538,91 +538,6 @@ async def build_nse_scanner() -> Dict[str, Any]:
     return data
 
 
-@app.get("/api/stocks/scanner")
-async def get_nse_scanner():
-    return await build_nse_scanner()
-
-
-@app.get("/api/stocks/chart/{symbol}")
-async def get_nse_chart(symbol: str):
-    sym = symbol if symbol.endswith(".NS") else f"{symbol}.NS"
-    cache_key = f"nse_chart_{sym}"
-    cached = get_cache(cache_key, ttl_sec=300)
-    if cached:
-        return cached
-
-    def _fetch():
-        t = yf.Ticker(sym)
-        hist = t.history(period="4mo", interval="1d")
-        if hist.empty:
-            return None
-        candles = []
-        for idx, row in hist.iterrows():
-            candles.append({
-                "time": int(idx.timestamp()),
-                "open": round(float(row["Open"]), 2),
-                "high": round(float(row["High"]), 2),
-                "low": round(float(row["Low"]), 2),
-                "close": round(float(row["Close"]), 2),
-            })
-        return candles
-
-    candles = await asyncio.to_thread(_fetch)
-    if not candles:
-        raise HTTPException(status_code=404, detail=f"NSE symbol {sym} not found")
-    payload = {"symbol": sym, "candles": candles}
-    set_cache(cache_key, payload)
-    return payload
-
-
-@app.get("/api/stocks/news")
-async def get_indian_stock_news():
-    cached = get_cache("nse_news_v5", ttl_sec=600)
-    if cached:
-        return cached
-    headlines: List[str] = []
-    async with httpx.AsyncClient() as client:
-        for url in [
-            "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
-            "https://www.moneycontrol.com/rss/marketreports.xml",
-        ]:
-            try:
-                r = await client.get(url, timeout=8.0)
-                if r.status_code == 200:
-                    parsed = feedparser.parse(r.text)
-                    for e in parsed.entries[:6]:
-                        headlines.append(e.title)
-            except Exception:
-                pass
-
-    ai_summary = None
-    if GEMINI_API_KEY and headlines:
-        prompt = (
-            "You are a pro Indian NSE equity swing analyst. Summarize these headlines focusing on Nifty 50, "
-            "RBI/macro, FII/DII flows, and top Indian sectors. Return valid JSON with keys: "
-            "macro_bias (Bullish/Bearish/Neutral), summary (2-3 sentences).\n\nHeadlines:\n"
-            + "\n".join(f"- {h}" for h in headlines[:8])
-        )
-        try:
-            async with httpx.AsyncClient() as client:
-                g_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-                g_resp = await client.post(
-                    g_url,
-                    json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json"}},
-                    timeout=15.0,
-                )
-                if g_resp.status_code == 200:
-                    ai_summary = json.loads(g_resp.json()["candidates"][0]["content"]["parts"][0]["text"])
-        except Exception:
-            pass
-    elif not GEMINI_API_KEY:
-        ai_summary = {"note": "Set GEMINI_API_KEY for Indian market AI summary."}
-
-    payload = {"headlines": headlines[:10], "gemini_analysis": ai_summary}
-    set_cache("nse_news_v5", payload)
-    return payload
-
-
 # ==================== TRADE PERSISTENCE & MONITORS ====================
 def _load_local_trades() -> List[Dict[str, Any]]:
     if LOCAL_TRADES_FILE.exists():
@@ -923,6 +838,91 @@ async def health_check():
 @app.get("/api/scanner")
 async def scan_rising_coins(limit: int = Query(25, ge=5, le=100)):
     return await build_scanner_data(limit=limit)
+
+
+@app.get("/api/stocks/scanner")
+async def get_nse_scanner():
+    return await build_nse_scanner()
+
+
+@app.get("/api/stocks/chart/{symbol}")
+async def get_nse_chart(symbol: str):
+    sym = symbol if symbol.endswith(".NS") else f"{symbol}.NS"
+    cache_key = f"nse_chart_{sym}"
+    cached = get_cache(cache_key, ttl_sec=300)
+    if cached:
+        return cached
+
+    def _fetch():
+        t = yf.Ticker(sym)
+        hist = t.history(period="4mo", interval="1d")
+        if hist.empty:
+            return None
+        candles = []
+        for idx, row in hist.iterrows():
+            candles.append({
+                "time": int(idx.timestamp()),
+                "open": round(float(row["Open"]), 2),
+                "high": round(float(row["High"]), 2),
+                "low": round(float(row["Low"]), 2),
+                "close": round(float(row["Close"]), 2),
+            })
+        return candles
+
+    candles = await asyncio.to_thread(_fetch)
+    if not candles:
+        raise HTTPException(status_code=404, detail=f"NSE symbol {sym} not found")
+    payload = {"symbol": sym, "candles": candles}
+    set_cache(cache_key, payload)
+    return payload
+
+
+@app.get("/api/stocks/news")
+async def get_indian_stock_news():
+    cached = get_cache("nse_news_v5", ttl_sec=600)
+    if cached:
+        return cached
+    headlines: List[str] = []
+    async with httpx.AsyncClient() as client:
+        for url in [
+            "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
+            "https://www.moneycontrol.com/rss/marketreports.xml",
+        ]:
+            try:
+                r = await client.get(url, timeout=8.0)
+                if r.status_code == 200:
+                    parsed = feedparser.parse(r.text)
+                    for e in parsed.entries[:6]:
+                        headlines.append(e.title)
+            except Exception:
+                pass
+
+    ai_summary = None
+    if GEMINI_API_KEY and headlines:
+        prompt = (
+            "You are a pro Indian NSE equity swing analyst. Summarize these headlines focusing on Nifty 50, "
+            "RBI/macro, FII/DII flows, and top Indian sectors. Return valid JSON with keys: "
+            "macro_bias (Bullish/Bearish/Neutral), summary (2-3 sentences).\n\nHeadlines:\n"
+            + "\n".join(f"- {h}" for h in headlines[:8])
+        )
+        try:
+            async with httpx.AsyncClient() as client:
+                g_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+                g_resp = await client.post(
+                    g_url,
+                    json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json"}},
+                    timeout=15.0,
+                )
+                if g_resp.status_code == 200:
+                    ai_summary = json.loads(g_resp.json()["candidates"][0]["content"]["parts"][0]["text"])
+        except Exception:
+            pass
+    elif not GEMINI_API_KEY:
+        ai_summary = {"note": "Set GEMINI_API_KEY for Indian market AI summary."}
+
+    payload = {"headlines": headlines[:10], "gemini_analysis": ai_summary}
+    set_cache("nse_news_v5", payload)
+    return payload
 
 
 @app.post("/api/alerts/test")
