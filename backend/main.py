@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import feedparser
 import httpx
+import yfinance as yf
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,9 +33,29 @@ FRONTEND_FILE = BASE_DIR.parent / "frontend" / "index.html"
 LOCAL_TRADES_FILE = BASE_DIR / "trades_backup.json"
 
 _CACHE: Dict[str, Dict[str, Any]] = {}
-_LAST_ALERTED: Dict[str, float] = {}
 _LAST_BRIEFING_DATE: str = ""
+_LAST_NSE_SCAN_DATE: str = ""
 
+NSE_UNIVERSE = [
+    ("RELIANCE.NS", "Reliance Industries"),
+    ("TCS.NS", "Tata Consultancy"),
+    ("HDFCBANK.NS", "HDFC Bank"),
+    ("ICICIBANK.NS", "ICICI Bank"),
+    ("SBIN.NS", "State Bank of India"),
+    ("INFY.NS", "Infosys"),
+    ("TATAMOTORS.NS", "Tata Motors"),
+    ("BHARTIARTL.NS", "Bharti Airtel"),
+    ("ITC.NS", "ITC Ltd"),
+    ("LT.NS", "Larsen & Toubro"),
+    ("AXISBANK.NS", "Axis Bank"),
+    ("BAJFINANCE.NS", "Bajaj Finance"),
+    ("SUNPHARMA.NS", "Sun Pharma"),
+    ("MARUTI.NS", "Maruti Suzuki"),
+    ("TITAN.NS", "Titan Company"),
+    ("TRENT.NS", "Trent Ltd"),
+    ("HAL.NS", "Hindustan Aeronautics"),
+    ("BEL.NS", "Bharat Electronics"),
+]
 
 
 def format_duration(seconds: int) -> str:
@@ -50,6 +71,7 @@ def format_duration(seconds: int) -> str:
     if mins > 0 or not parts:
         parts.append(f"{mins}m")
     return " ".join(parts)
+
 
 def get_cache(key: str, ttl_sec: int = 300) -> Optional[Any]:
     entry = _CACHE.get(key)
@@ -94,11 +116,22 @@ def calc_rsi(prices: List[float], period: int = 14) -> Optional[float]:
     return 100.0 - (100.0 / (1.0 + rs))
 
 
+def calc_atr(candles: List[Dict[str, float]], period: int = 14) -> float:
+    if len(candles) < period + 1:
+        return candles[-1]["c"] * 0.02 if candles else 1.0
+    trs = []
+    for i in range(1, len(candles)):
+        cur, prev = candles[i], candles[i - 1]
+        trs.append(max(cur["h"] - cur["l"], abs(cur["h"] - prev["c"]), abs(cur["l"] - prev["c"])))
+    atr = sum(trs[:period]) / period
+    for tr in trs[period:]:
+        atr = (atr * (period - 1) + tr) / period
+    return atr
+
+
 def calc_adx_and_obv(candles: List[Dict[str, float]], period: int = 14) -> Tuple[float, bool, float]:
-    """Returns (adx_14, obv_rising, rvol)."""
     if len(candles) < period + 5:
         return 18.0, False, 1.0
-
     trs, plus_dms, minus_dms = [], [], []
     obv = [0.0]
     for i in range(1, len(candles)):
@@ -130,44 +163,13 @@ def calc_adx_and_obv(candles: List[Dict[str, float]], period: int = 14) -> Tuple
         m_di = 100.0 * (m_s / tr_s)
         denom = p_di + m_di
         dx = 100.0 * abs(p_di - m_di) / denom if denom > 0 else 0.0
-        dx_list.append((dx, p_di > m_di))
+        dx_list.append(dx)
 
-    adx = sum(x[0] for x in dx_list[-period:]) / max(1, min(period, len(dx_list)))
+    adx = sum(dx_list[-period:]) / max(1, min(period, len(dx_list)))
     obv_rising = obv[-1] > obv[-6] if len(obv) >= 6 else False
     avg_vol = sum(c["v"] for c in candles[-21:-1]) / 20.0
     rvol = (candles[-1]["v"] / avg_vol) if avg_vol > 0 else 1.0
     return round(adx, 1), obv_rising, round(rvol, 2)
-
-
-async def fetch_4h_technicals(client: httpx.AsyncClient, symbol: str) -> Optional[Dict[str, Any]]:
-    """Fetches 4H klines from Binance for Anti-Falling-Knife & ADX/OBV verification."""
-    pair = f"{symbol.upper()}USDT"
-    try:
-        r = await client.get(
-            f"https://api.binance.com/api/v3/klines?symbol={pair}&interval=4h&limit=60",
-            timeout=6.0,
-        )
-        if r.status_code != 200:
-            return None
-        raw = r.json()
-        candles = [
-            {"o": float(k[1]), "h": float(k[2]), "l": float(k[3]), "c": float(k[4]), "v": float(k[5])}
-            for k in raw
-        ]
-        closes = [c["c"] for c in candles]
-        ema20 = calc_ema(closes, 20)
-        rsi14 = calc_rsi(closes, 14)
-        adx14, obv_rising, rvol = calc_adx_and_obv(candles, 14)
-        above_ema20 = (closes[-1] > ema20) if ema20 else False
-        return {
-            "above_ema20": above_ema20,
-            "rsi_4h": round(rsi14, 1) if rsi14 else 50.0,
-            "adx_4h": adx14,
-            "obv_rising": obv_rising,
-            "rvol": rvol,
-        }
-    except Exception:
-        return None
 
 
 async def send_telegram_message(text: str) -> bool:
@@ -184,6 +186,35 @@ async def send_telegram_message(text: str) -> bool:
             return r.status_code == 200
     except Exception:
         return False
+
+
+# ==================== CRYPTO ENGINE ====================
+async def fetch_4h_technicals(client: httpx.AsyncClient, symbol: str) -> Optional[Dict[str, Any]]:
+    pair = f"{symbol.upper()}USDT"
+    try:
+        r = await client.get(
+            f"https://api.binance.com/api/v3/klines?symbol={pair}&interval=4h&limit=60",
+            timeout=6.0,
+        )
+        if r.status_code != 200:
+            return None
+        candles = [
+            {"o": float(k[1]), "h": float(k[2]), "l": float(k[3]), "c": float(k[4]), "v": float(k[5])}
+            for k in r.json()
+        ]
+        closes = [c["c"] for c in candles]
+        ema20 = calc_ema(closes, 20)
+        rsi14 = calc_rsi(closes, 14)
+        adx14, obv_rising, rvol = calc_adx_and_obv(candles, 14)
+        return {
+            "above_ema20": (closes[-1] > ema20) if ema20 else False,
+            "rsi_4h": round(rsi14, 1) if rsi14 else 50.0,
+            "adx_4h": adx14,
+            "obv_rising": obv_rising,
+            "rvol": rvol,
+        }
+    except Exception:
+        return None
 
 
 async def fetch_btc_dominance(client: httpx.AsyncClient) -> float:
@@ -225,16 +256,13 @@ async def fetch_coindcx_inr_tickers(client: httpx.AsyncClient) -> Dict[str, floa
 
 
 async def build_scanner_data(limit: int = 25) -> Dict[str, Any]:
-    cache_key = f"scanner_v3_{limit}"
+    cache_key = f"scanner_v5_{limit}"
     cached = get_cache(cache_key, ttl_sec=300)
     if cached:
         return cached
 
     headers = {"x-cg-demo-api-key": COINGECKO_DEMO_KEY} if COINGECKO_DEMO_KEY else {}
     coins = None
-    dcx_inr: Dict[str, float] = {}
-    btc_dom = 58.0
-
     async with httpx.AsyncClient() as client:
         dcx_inr, btc_dom = await asyncio.gather(
             fetch_coindcx_inr_tickers(client),
@@ -252,7 +280,6 @@ async def build_scanner_data(limit: int = 25) -> Dict[str, Any]:
         except Exception:
             coins = None
 
-        # Fallback to Binance + CoinDCX if CoinGecko rate-limits (429)
         if coins is None:
             stale = _CACHE.get(cache_key)
             if stale:
@@ -263,7 +290,6 @@ async def build_scanner_data(limit: int = 25) -> Dict[str, Any]:
                 b_map = {x["symbol"]: x for x in b_resp.json()} if b_resp.status_code == 200 else {}
             except Exception:
                 b_map = {}
-
             coins = []
             for sym in top_syms:
                 t = b_map.get(sym + "USDT", {})
@@ -281,18 +307,14 @@ async def build_scanner_data(limit: int = 25) -> Dict[str, Any]:
                     "price_change_percentage_7d_in_currency": pct_24h * 1.2,
                     "price_change_percentage_14d_in_currency": pct_24h * 1.4,
                     "price_change_percentage_30d_in_currency": pct_24h * 1.8,
-                    "market_cap": 100.0,
-                    "total_volume": 5.0,
                 })
 
-        # Compute BTC 7D change for Relative Strength (RS vs BTC)
         btc_7d = 0.0
         for c in coins:
             if (c.get("symbol") or "").lower() == "btc":
                 btc_7d = c.get("price_change_percentage_7d_in_currency") or 0.0
                 break
 
-        # Fetch 4H technicals concurrently for top non-stablecoin candidates
         valid_coins = [
             c for c in coins
             if (c.get("symbol") or "").lower() not in {"usdt", "usdc", "dai", "fdusd", "tusd"}
@@ -305,6 +327,8 @@ async def build_scanner_data(limit: int = 25) -> Dict[str, Any]:
     alt_season_boost = 5.0 if btc_dom < 56.0 else 0.0
     results = []
     for c, tech in zip(valid_coins, tech_list):
+        if tech is None:
+            continue  # Tradeable Filter: skip non-Binance/illiquid tokens like FIGR_HELOC
         sym = (c.get("symbol") or "").lower()
         cg_price_inr = c.get("current_price") or 0.0
         dcx_price_inr = dcx_inr.get(sym)
@@ -317,12 +341,11 @@ async def build_scanner_data(limit: int = 25) -> Dict[str, Any]:
         pct_10d = round(pct_7d + (pct_14d - pct_7d) * (3.0 / 7.0), 2)
 
         rs_vs_btc = round(pct_7d - btc_7d, 2)
-        above_ema20 = tech["above_ema20"] if tech else (pct_24h > 0)
-        adx_4h = tech["adx_4h"] if tech else 18.0
-        obv_rising = tech["obv_rising"] if tech else False
-        rvol = tech["rvol"] if tech else 1.0
+        above_ema20 = tech["above_ema20"]
+        adx_4h = tech["adx_4h"]
+        obv_rising = tech["obv_rising"]
+        rvol = tech["rvol"]
 
-        # Pro Scoring (v3)
         score = 35.0 + (alt_season_boost if sym != "btc" else 0.0)
         if above_ema20:
             score += 20.0
@@ -335,7 +358,6 @@ async def build_scanner_data(limit: int = 25) -> Dict[str, Any]:
         if pct_7d > 0 and pct_30d > 0:
             score += 10.0
 
-        # Anti-Falling-Knife Guard: prevent false 75+ alerts on deep downtrends below 4H EMA 20
         falling_knife = (not above_ema20) and (pct_30d < -15.0 or pct_7d < -7.0)
         if falling_knife:
             score = min(score, 54.0)
@@ -367,7 +389,7 @@ async def build_scanner_data(limit: int = 25) -> Dict[str, Any]:
             "target_inr": round(price_inr * tp_mult, 2),
             "stop_loss_inr": round(price_inr * sl_mult, 2),
             "hold_label": hold_label,
-            "price_source": "CoinDCX INR" if dcx_price_inr else "CoinGecko/Binance INR",
+            "price_source": "CoinDCX INR" if dcx_price_inr else "Binance/Gecko INR",
             "change_24h_pct": round(pct_24h, 2),
             "change_7d_pct": round(pct_7d, 2),
             "change_10d_pct": pct_10d,
@@ -385,7 +407,223 @@ async def build_scanner_data(limit: int = 25) -> Dict[str, Any]:
     return payload
 
 
-# ---- Trade Persistence Helpers (Phase 2 & Auto Target/SL Monitor) ----
+# ==================== INDIAN STOCKS (NSE) ENGINE ====================
+def _sync_build_nse_scanner() -> Dict[str, Any]:
+    tickers = ["^NSEI", "^INDIAVIX"] + [s[0] for s in NSE_UNIVERSE]
+    df = yf.download(tickers, period="3mo", interval="1d", group_by="ticker", progress=False, threads=True)
+
+    def extract_candles(sym: str) -> List[Dict[str, float]]:
+        try:
+            sub = df[sym].dropna()
+            out = []
+            for idx, row in sub.iterrows():
+                out.append({
+                    "t": int(idx.timestamp()),
+                    "o": float(row["Open"]),
+                    "h": float(row["High"]),
+                    "l": float(row["Low"]),
+                    "c": float(row["Close"]),
+                    "v": float(row["Volume"] or 0),
+                })
+            return out
+        except Exception:
+            return []
+
+    nifty_c = extract_candles("^NSEI")
+    vix_c = extract_candles("^INDIAVIX")
+
+    nifty_price = round(nifty_c[-1]["c"], 2) if nifty_c else 0.0
+    nifty_ema50 = calc_ema([x["c"] for x in nifty_c], 50) if len(nifty_c) >= 50 else None
+    nifty_bullish = (nifty_price > nifty_ema50) if nifty_ema50 else True
+    nifty_7d = ((nifty_c[-1]["c"] - nifty_c[-6]["c"]) / nifty_c[-6]["c"] * 100) if len(nifty_c) >= 6 else 0.0
+    india_vix = round(vix_c[-1]["c"], 2) if vix_c else 14.5
+    regime_ok = nifty_bullish and (india_vix < 22.0)
+
+    stocks = []
+    for sym, name in NSE_UNIVERSE:
+        c = extract_candles(sym)
+        if len(c) < 35:
+            continue
+        closes = [x["c"] for x in c]
+        price = closes[-1]
+        ema20 = calc_ema(closes, 20) or price
+        ema50 = calc_ema(closes, 50) or ema20
+        rsi14 = calc_rsi(closes, 14) or 50.0
+        atr14 = calc_atr(c, 14)
+        adx14, obv_rising, rvol = calc_adx_and_obv(c, 14)
+
+        pct_24h = ((closes[-1] - closes[-2]) / closes[-2]) * 100
+        pct_7d = ((closes[-1] - closes[-6]) / closes[-6]) * 100 if len(closes) >= 6 else 0.0
+        pct_10d = ((closes[-1] - closes[-9]) / closes[-9]) * 100 if len(closes) >= 9 else pct_7d
+        pct_30d = ((closes[-1] - closes[-22]) / closes[-22]) * 100 if len(closes) >= 22 else pct_7d
+        rs_vs_nifty = round(pct_7d - nifty_7d, 2)
+
+        above_ema20 = price > ema20
+        uptrend_stack = price > ema20 and ema20 > ema50
+
+        score = 30.0
+        if uptrend_stack:
+            score += 20.0
+        elif above_ema20:
+            score += 10.0
+        if adx14 >= 20.0:
+            score += 15.0
+        if obv_rising and rvol >= 1.2:
+            score += 15.0
+        elif obv_rising or rvol >= 1.2:
+            score += 8.0
+        if rs_vs_nifty > 1.5:
+            score += 10.0
+        if 48.0 <= rsi14 <= 68.0:
+            score += 10.0
+
+        falling_knife = (not above_ema20) or (pct_30d < -12.0 and not above_ema20)
+        if falling_knife:
+            score = min(score, 52.0)
+        if not regime_ok:
+            score = min(score, 64.0)
+
+        score = round(min(100.0, max(0.0, score)), 1)
+        signal = (
+            "Falling Knife (Wait)" if falling_knife
+            else "Confirmed Breakout" if (score >= 75 and uptrend_stack)
+            else "Trend Swing" if score >= 65
+            else "Accumulation" if score >= 55
+            else "Watchlist"
+        )
+
+        sl = round(max(price * 0.85, price - atr14 * 1.5), 2)
+        tp1 = round(price + atr14 * 2.25, 2)
+        tp2 = round(price + atr14 * 4.0, 2)
+        hold_label = "2-4 Days (Momentum)" if (adx14 >= 25 and rvol >= 1.3) else ("5-10 Days (Positional)" if uptrend_stack else "3-5 Days (Swing)")
+
+        stocks.append({
+            "symbol": sym,
+            "short_symbol": sym.replace(".NS", ""),
+            "name": name,
+            "price_inr": round(price, 2),
+            "target_inr": tp1,
+            "target2_inr": tp2,
+            "stop_loss_inr": sl,
+            "hold_label": hold_label,
+            "change_24h_pct": round(pct_24h, 2),
+            "change_7d_pct": round(pct_7d, 2),
+            "change_10d_pct": round(pct_10d, 2),
+            "change_30d_pct": round(pct_30d, 2),
+            "rsi_14": round(rsi14, 1),
+            "adx_14": adx14,
+            "rvol": rvol,
+            "rs_vs_nifty": rs_vs_nifty,
+            "swing_score": score,
+            "signal": signal,
+        })
+
+    stocks.sort(key=lambda x: x["swing_score"], reverse=True)
+    return {
+        "nifty_50": nifty_price,
+        "nifty_bullish": nifty_bullish,
+        "india_vix": india_vix,
+        "regime": "Bullish (Safe)" if regime_ok else "Caution (Nifty/VIX)",
+        "count": len(stocks),
+        "stocks": stocks,
+    }
+
+
+async def build_nse_scanner() -> Dict[str, Any]:
+    cached = get_cache("nse_scanner_v5", ttl_sec=300)
+    if cached:
+        return cached
+    data = await asyncio.to_thread(_sync_build_nse_scanner)
+    set_cache("nse_scanner_v5", data)
+    return data
+
+
+@app.get("/api/stocks/scanner")
+async def get_nse_scanner():
+    return await build_nse_scanner()
+
+
+@app.get("/api/stocks/chart/{symbol}")
+async def get_nse_chart(symbol: str):
+    sym = symbol if symbol.endswith(".NS") else f"{symbol}.NS"
+    cache_key = f"nse_chart_{sym}"
+    cached = get_cache(cache_key, ttl_sec=300)
+    if cached:
+        return cached
+
+    def _fetch():
+        t = yf.Ticker(sym)
+        hist = t.history(period="4mo", interval="1d")
+        if hist.empty:
+            return None
+        candles = []
+        for idx, row in hist.iterrows():
+            candles.append({
+                "time": int(idx.timestamp()),
+                "open": round(float(row["Open"]), 2),
+                "high": round(float(row["High"]), 2),
+                "low": round(float(row["Low"]), 2),
+                "close": round(float(row["Close"]), 2),
+            })
+        return candles
+
+    candles = await asyncio.to_thread(_fetch)
+    if not candles:
+        raise HTTPException(status_code=404, detail=f"NSE symbol {sym} not found")
+    payload = {"symbol": sym, "candles": candles}
+    set_cache(cache_key, payload)
+    return payload
+
+
+@app.get("/api/stocks/news")
+async def get_indian_stock_news():
+    cached = get_cache("nse_news_v5", ttl_sec=600)
+    if cached:
+        return cached
+    headlines: List[str] = []
+    async with httpx.AsyncClient() as client:
+        for url in [
+            "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
+            "https://www.moneycontrol.com/rss/marketreports.xml",
+        ]:
+            try:
+                r = await client.get(url, timeout=8.0)
+                if r.status_code == 200:
+                    parsed = feedparser.parse(r.text)
+                    for e in parsed.entries[:6]:
+                        headlines.append(e.title)
+            except Exception:
+                pass
+
+    ai_summary = None
+    if GEMINI_API_KEY and headlines:
+        prompt = (
+            "You are a pro Indian NSE equity swing analyst. Summarize these headlines focusing on Nifty 50, "
+            "RBI/macro, FII/DII flows, and top Indian sectors. Return valid JSON with keys: "
+            "macro_bias (Bullish/Bearish/Neutral), summary (2-3 sentences).\n\nHeadlines:\n"
+            + "\n".join(f"- {h}" for h in headlines[:8])
+        )
+        try:
+            async with httpx.AsyncClient() as client:
+                g_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+                g_resp = await client.post(
+                    g_url,
+                    json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json"}},
+                    timeout=15.0,
+                )
+                if g_resp.status_code == 200:
+                    ai_summary = json.loads(g_resp.json()["candidates"][0]["content"]["parts"][0]["text"])
+        except Exception:
+            pass
+    elif not GEMINI_API_KEY:
+        ai_summary = {"note": "Set GEMINI_API_KEY for Indian market AI summary."}
+
+    payload = {"headlines": headlines[:10], "gemini_analysis": ai_summary}
+    set_cache("nse_news_v5", payload)
+    return payload
+
+
+# ==================== TRADE PERSISTENCE & MONITORS ====================
 def _load_local_trades() -> List[Dict[str, Any]]:
     if LOCAL_TRADES_FILE.exists():
         try:
@@ -415,47 +653,6 @@ async def fetch_all_trades() -> Tuple[str, List[Dict[str, Any]]]:
     return "Local JSON", _load_local_trades()
 
 
-async def update_trade_status(trade_id: str, new_status: str, exit_price: float = 0.0, duration_str: str = "") -> None:
-    now_ts = int(time.time())
-    if SUPABASE_URL and SUPABASE_KEY:
-        try:
-            async with httpx.AsyncClient() as client:
-                r = await client.patch(
-                    f"{SUPABASE_URL}/rest/v1/paper_trades?id=eq.{trade_id}",
-                    headers={
-                        "apikey": SUPABASE_KEY,
-                        "Authorization": f"Bearer {SUPABASE_KEY}",
-                        "Content-Type": "application/json",
-                    },
-                    json={"status": new_status, "exit_price_inr": round(exit_price, 2), "closed_at": now_ts, "duration_str": duration_str},
-                    timeout=8.0,
-                )
-                if r.status_code in (200, 204):
-                    return
-                # Fallback if extra columns not added yet
-                await client.patch(
-                    f"{SUPABASE_URL}/rest/v1/paper_trades?id=eq.{trade_id}",
-                    headers={
-                        "apikey": SUPABASE_KEY,
-                        "Authorization": f"Bearer {SUPABASE_KEY}",
-                        "Content-Type": "application/json",
-                    },
-                    json={"status": new_status},
-                    timeout=8.0,
-                )
-                return
-        except Exception:
-            pass
-    trades = _load_local_trades()
-    for t in trades:
-        if t.get("id") == trade_id:
-            t["status"] = new_status
-            t["exit_price_inr"] = round(exit_price, 2)
-            t["closed_at"] = now_ts
-            t["duration_str"] = duration_str
-    _save_local_trades(trades)
-
-
 async def insert_paper_trade(row: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     if SUPABASE_URL and SUPABASE_KEY:
         try:
@@ -473,7 +670,6 @@ async def insert_paper_trade(row: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
                 )
                 if r.status_code in (200, 201):
                     return "Supabase", r.json()[0]
-                # Fallback if v4 columns (hold_label) not added in SQL yet
                 base_row = {k: row[k] for k in ["id", "symbol", "budget_inr", "buy_price_inr", "target_inr", "stop_loss_inr", "status", "created_at"]}
                 r2 = await client.post(
                     f"{SUPABASE_URL}/rest/v1/paper_trades",
@@ -496,14 +692,53 @@ async def insert_paper_trade(row: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     return "Local JSON", row
 
 
+async def update_trade_status(trade_id: str, new_status: str, exit_price: float = 0.0, duration_str: str = "") -> None:
+    now_ts = int(time.time())
+    if SUPABASE_URL and SUPABASE_KEY:
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.patch(
+                    f"{SUPABASE_URL}/rest/v1/paper_trades?id=eq.{trade_id}",
+                    headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"},
+                    json={"status": new_status, "exit_price_inr": round(exit_price, 2), "closed_at": now_ts, "duration_str": duration_str},
+                    timeout=8.0,
+                )
+                if r.status_code in (200, 204):
+                    return
+                await client.patch(
+                    f"{SUPABASE_URL}/rest/v1/paper_trades?id=eq.{trade_id}",
+                    headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json"},
+                    json={"status": new_status},
+                    timeout=8.0,
+                )
+                return
+        except Exception:
+            pass
+    trades = _load_local_trades()
+    for t in trades:
+        if t.get("id") == trade_id:
+            t["status"] = new_status
+            t["exit_price_inr"] = round(exit_price, 2)
+            t["closed_at"] = now_ts
+            t["duration_str"] = duration_str
+    _save_local_trades(trades)
+
+
 async def check_open_trades_tp_sl():
-    """Checks HOLDING trades against live INR prices and closes on Target / SL hit."""
     _, trades = await fetch_all_trades()
     holding = [t for t in trades if t.get("status") == "HOLDING"]
     if not holding:
         return
-    data = await build_scanner_data(limit=25)
-    price_map = {c["symbol"]: c["price_inr"] for c in data["coins"]}
+
+    crypto_data = await build_scanner_data(limit=25)
+    price_map = {c["symbol"]: c["price_inr"] for c in crypto_data["coins"]}
+
+    has_nse = any((t.get("market") == "NSE" or ".NS" in str(t.get("symbol", ""))) for t in holding)
+    if has_nse:
+        nse_data = await build_nse_scanner()
+        for s in nse_data["stocks"]:
+            price_map[s["short_symbol"]] = s["price_inr"]
+            price_map[s["symbol"]] = s["price_inr"]
 
     for t in holding:
         sym = t.get("symbol", "").upper()
@@ -514,14 +749,14 @@ async def check_open_trades_tp_sl():
         sl = float(t.get("stop_loss_inr") or 0)
         buy = float(t.get("buy_price_inr") or 1)
         budget = float(t.get("budget_inr") or 1000)
-
-        created_at = int(t.get("created_at") or time.time())
-        dur_str = format_duration(int(time.time()) - created_at)
+        is_nse = (t.get("market") == "NSE" or ".NS" in sym)
+        fee_mult = 0.9975 if is_nse else 0.988
+        dur_str = format_duration(int(time.time()) - int(t.get("created_at") or time.time()))
         planned = t.get("hold_label") or "1-2 Days"
 
         if tp > 0 and live_p >= tp:
             await update_trade_status(t["id"], "WIN", live_p, dur_str)
-            pnl = budget * ((live_p - buy) / buy) * 0.988
+            pnl = budget * ((live_p - buy) / buy) * fee_mult
             await send_telegram_message(
                 f"🎯 <b>Target Hit! ({sym})</b>\n"
                 f"Time Taken: <b>{dur_str}</b> (Planned: {planned})\n"
@@ -535,29 +770,6 @@ async def check_open_trades_tp_sl():
                 f"Time Taken: <b>{dur_str}</b> (Planned: {planned})\n"
                 f"Exit: ₹{live_p:,.2f} | Loss: <b>₹{pnl:,.2f}</b>"
             )
-
-
-async def build_and_send_briefing() -> Dict[str, Any]:
-    data = await build_scanner_data(limit=25)
-    news = await get_news_and_macro()
-    fg = news.get("fear_and_greed", {})
-    gem = news.get("gemini_analysis") or {}
-    macro_line = gem.get("summary") or "Check panel for latest US Fed & ETF headlines."
-    top_picks = [c for c in data["coins"] if c["swing_score"] >= 60][:3]
-    picks_txt = "\n".join(
-        f"• <b>{c['symbol']}</b>: ₹{c['price_inr']:,.2f} | Score <b>{c['swing_score']}</b> ({c['signal']})"
-        for c in top_picks
-    ) or "• No safe 60+ setups right now (Capital Protection Mode)."
-
-    msg = (
-        f"☀️ <b>ApexQuant 8 AM Morning Briefing</b>\n"
-        f"Fear &amp; Greed: <b>{fg.get('value', '--')} ({fg.get('classification', 'N/A')})</b> | BTC.D: <b>{data['btc_dominance']}%</b>\n\n"
-        f"<b>US Macro &amp; News:</b>\n{macro_line}\n\n"
-        f"<b>Top Safe INR Swing Picks:</b>\n{picks_txt}"
-    )
-    ok = await send_telegram_message(msg)
-    return {"sent": ok, "picks": len(top_picks)}
-
 
 
 async def run_auto_signal_cycle(min_score: float = 68.0) -> Dict[str, Any]:
@@ -575,6 +787,7 @@ async def run_auto_signal_cycle(min_score: float = 68.0) -> Dict[str, Any]:
         row = {
             "id": str(uuid.uuid4())[:8],
             "symbol": c["symbol"],
+            "market": "CRYPTO",
             "budget_inr": 1000.0,
             "buy_price_inr": c["price_inr"],
             "target_inr": c["target_inr"],
@@ -586,29 +799,90 @@ async def run_auto_signal_cycle(min_score: float = 68.0) -> Dict[str, Any]:
         await insert_paper_trade(row)
         logged.append(c["symbol"])
         await send_telegram_message(
-            f"🟢 <b>AUTO BUY SIGNAL (Added to Paper)</b>\n"
+            f"🟢 <b>CRYPTO AUTO BUY (Paper Logged)</b>\n"
             f"Coin: <b>{c['name']} ({c['symbol']})</b> | Score: <b>{c['swing_score']}</b>\n"
             f"Buy: ₹{c['price_inr']:,.2f} | Hold: <b>{c['hold_label']}</b>\n"
             f"Target: ₹{c['target_inr']:,.2f} | SL: ₹{c['stop_loss_inr']:,.2f}"
         )
     return {"checked": len(data["coins"]), "auto_logged": logged}
 
+
+async def run_nse_auto_cycle(min_score: float = 70.0) -> Dict[str, Any]:
+    data = await build_nse_scanner()
+    _, existing = await fetch_all_trades()
+    holding_syms = {t.get("symbol", "").upper() for t in existing if t.get("status") == "HOLDING"}
+
+    candidates = [
+        s for s in data["stocks"]
+        if s["swing_score"] >= min_score and s["short_symbol"] not in holding_syms and "Falling Knife" not in s["signal"]
+    ][:2]
+
+    logged = []
+    for s in candidates:
+        row = {
+            "id": str(uuid.uuid4())[:8],
+            "symbol": s["short_symbol"],
+            "market": "NSE",
+            "budget_inr": 5000.0,
+            "buy_price_inr": s["price_inr"],
+            "target_inr": s["target_inr"],
+            "stop_loss_inr": s["stop_loss_inr"],
+            "hold_label": s["hold_label"],
+            "status": "HOLDING",
+            "created_at": int(time.time()),
+        }
+        await insert_paper_trade(row)
+        logged.append(s["short_symbol"])
+        await send_telegram_message(
+            f"📈 <b>NSE STOCK AUTO BUY (Paper Logged)</b>\n"
+            f"Stock: <b>{s['name']} ({s['short_symbol']})</b> | Score: <b>{s['swing_score']}</b>\n"
+            f"Buy: ₹{s['price_inr']:,.2f} | Hold: <b>{s['hold_label']}</b>\n"
+            f"Target: ₹{s['target_inr']:,.2f} | SL: ₹{s['stop_loss_inr']:,.2f}\n"
+            f"Nifty 50: {data['nifty_50']} | VIX: {data['india_vix']}"
+        )
+    return {"regime": data["regime"], "auto_logged": logged}
+
+
+async def build_and_send_briefing() -> Dict[str, Any]:
+    data = await build_scanner_data(limit=25)
+    news = await get_news_and_macro()
+    fg = news.get("fear_and_greed", {})
+    gem = news.get("gemini_analysis") or {}
+    macro_line = gem.get("summary") or "Check panel for latest US Fed & ETF headlines."
+    top_picks = [c for c in data["coins"] if c["swing_score"] >= 60][:3]
+    picks_txt = "\n".join(
+        f"• <b>{c['symbol']}</b>: ₹{c['price_inr']:,.2f} | Score <b>{c['swing_score']}</b> ({c['signal']})"
+        for c in top_picks
+    ) or "• No safe 60+ setups right now (Capital Protection Mode)."
+
+    msg = (
+        f"☀️ <b>ApexQuant 8 AM Crypto Briefing</b>\n"
+        f"Fear &amp; Greed: <b>{fg.get('value', '--')} ({fg.get('classification', 'N/A')})</b> | BTC.D: <b>{data['btc_dominance']}%</b>\n\n"
+        f"<b>US Macro &amp; News:</b>\n{macro_line}\n\n"
+        f"<b>Top Safe INR Swing Picks:</b>\n{picks_txt}"
+    )
+    ok = await send_telegram_message(msg)
+    return {"sent": ok, "picks": len(top_picks)}
+
+
 async def background_monitor_loop():
-    """Runs every 5 min: checks TP/SL on HOLDING trades, 8 AM IST Briefing, & 2h 75+ Breakout Alerts."""
-    global _LAST_BRIEFING_DATE
+    global _LAST_BRIEFING_DATE, _LAST_NSE_SCAN_DATE
     last_scan_ts = 0.0
     while True:
         try:
             await check_open_trades_tp_sl()
-
-            # 8:00 AM IST Morning Briefing
             ist_now = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
             today_str = ist_now.strftime("%Y-%m-%d")
+
             if ist_now.hour == 8 and ist_now.minute < 15 and _LAST_BRIEFING_DATE != today_str:
                 _LAST_BRIEFING_DATE = today_str
                 await build_and_send_briefing()
 
-            # Every 2 hours: Auto Buy Signal -> Auto Paper Work + Telegram Alert
+            # Mon-Fri 9:30 AM IST NSE Market Open Scan
+            if ist_now.weekday() < 5 and ist_now.hour == 9 and 30 <= ist_now.minute < 45 and _LAST_NSE_SCAN_DATE != today_str:
+                _LAST_NSE_SCAN_DATE = today_str
+                await run_nse_auto_cycle(min_score=70.0)
+
             if time.time() - last_scan_ts >= 7200:
                 last_scan_ts = time.time()
                 await run_auto_signal_cycle()
@@ -624,7 +898,7 @@ async def lifespan(app: FastAPI):
     task.cancel()
 
 
-app = FastAPI(title="ApexQuant INR Spot Swing v3", version="3.0.0", lifespan=lifespan)
+app = FastAPI(title="ApexQuant Dual-Market v5 (Crypto + NSE)", version="5.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -638,12 +912,12 @@ app.add_middleware(
 async def serve_dashboard():
     if FRONTEND_FILE.exists():
         return FileResponse(FRONTEND_FILE)
-    return {"status": "ApexQuant v3 API running. Visit /docs"}
+    return {"status": "ApexQuant v5 API running. Visit /docs"}
 
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "version": "3.0.0", "ts": int(time.time())}
+    return {"status": "ok", "version": "5.0.0", "ts": int(time.time())}
 
 
 @app.get("/api/scanner")
@@ -654,16 +928,15 @@ async def scan_rising_coins(limit: int = Query(25, ge=5, le=100)):
 @app.post("/api/alerts/test")
 async def test_telegram_alert():
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return {"sent": False, "detail": "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in Environment Variables."}
+        return {"sent": False, "detail": "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID"}
     data = await build_scanner_data(limit=15)
     top = data["coins"][0] if data["coins"] else None
     if not top:
         return {"sent": False, "detail": "No coins returned"}
     msg = (
-        f"✅ <b>ApexQuant v3 Test Alert</b>\n"
+        f"✅ <b>ApexQuant v5 Test Alert</b>\n"
         f"Top Pick: <b>{top['name']} ({top['symbol']})</b>\n"
-        f"Price: ₹{top['price_inr']:,.2f} | Score: <b>{top['swing_score']}</b> ({top['signal']})\n"
-        f"4H EMA20 Reclaimed: {top['above_ema20']} | ADX: {top['adx_4h']}"
+        f"Price: ₹{top['price_inr']:,.2f} | Score: <b>{top['swing_score']}</b> ({top['signal']})"
     )
     ok = await send_telegram_message(msg)
     return {"sent": ok, "coin": top["symbol"]}
@@ -676,12 +949,21 @@ async def trigger_morning_briefing():
     return await build_and_send_briefing()
 
 
+@app.post("/api/alerts/auto-cycle")
+async def trigger_auto_cycle():
+    return await run_auto_signal_cycle(min_score=65.0)
+
+
+@app.post("/api/stocks/auto-cycle")
+async def trigger_nse_auto_cycle():
+    return await run_nse_auto_cycle(min_score=65.0)
+
+
 @app.get("/api/news-macro")
 async def get_news_and_macro():
     cached = get_cache("news_macro", ttl_sec=300)
     if cached:
         return cached
-
     fear_greed = {}
     headlines: List[str] = []
     btc_dom = 58.0
@@ -692,22 +974,15 @@ async def get_news_and_macro():
             fg_resp = await client.get("https://api.alternative.me/fng/?limit=1", timeout=8.0)
             if fg_resp.status_code == 200:
                 fg_data = fg_resp.json().get("data", [{}])[0]
-                fear_greed = {
-                    "value": int(fg_data.get("value", 50)),
-                    "classification": fg_data.get("value_classification", "Neutral"),
-                }
+                fear_greed = {"value": int(fg_data.get("value", 50)), "classification": fg_data.get("value_classification", "Neutral")}
         except Exception:
             fear_greed = {"value": 50, "classification": "Unavailable"}
 
-        for rss_url in [
-            "https://www.coindesk.com/arc/outboundfeeds/rss/",
-            "https://cointelegraph.com/rss",
-        ]:
+        for rss_url in ["https://www.coindesk.com/arc/outboundfeeds/rss/", "https://cointelegraph.com/rss"]:
             try:
                 r = await client.get(rss_url, timeout=8.0)
                 if r.status_code == 200:
-                    parsed = feedparser.parse(r.text)
-                    for entry in parsed.entries[:6]:
+                    for entry in feedparser.parse(r.text).entries[:6]:
                         headlines.append(entry.title)
             except Exception:
                 pass
@@ -717,50 +992,37 @@ async def get_news_and_macro():
         prompt = (
             "You are a pro crypto spot swing analyst. Summarize these latest headlines focusing on "
             "US Fed/macro policy, ETF flows, and top coin catalysts. Return valid JSON with keys: "
-            "macro_bias (Bullish/Bearish/Neutral), summary (2-3 sentences), top_catalysts (list of up to 3 strings).\n\n"
-            "Headlines:\n" + "\n".join(f"- {h}" for h in headlines[:10])
+            "macro_bias (Bullish/Bearish/Neutral), summary (2-3 sentences).\n\nHeadlines:\n"
+            + "\n".join(f"- {h}" for h in headlines[:10])
         )
         try:
             async with httpx.AsyncClient() as client:
                 g_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
                 g_resp = await client.post(
                     g_url,
-                    json={
-                        "contents": [{"parts": [{"text": prompt}]}],
-                        "generationConfig": {"responseMimeType": "application/json"},
-                    },
+                    json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json"}},
                     timeout=15.0,
                 )
                 if g_resp.status_code == 200:
-                    raw_text = g_resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-                    ai_summary = json.loads(raw_text)
+                    ai_summary = json.loads(g_resp.json()["candidates"][0]["content"]["parts"][0]["text"])
         except Exception as exc:
             ai_summary = {"error": f"Gemini analysis failed: {exc}"}
     elif not GEMINI_API_KEY:
-        ai_summary = {"note": "Set GEMINI_API_KEY in Environment Variables for live AI summary."}
+        ai_summary = {"note": "Set GEMINI_API_KEY for live AI summary."}
 
-    payload = {
-        "btc_dominance": btc_dom,
-        "fear_and_greed": fear_greed,
-        "headlines": headlines[:10],
-        "gemini_analysis": ai_summary,
-    }
+    payload = {"btc_dominance": btc_dom, "fear_and_greed": fear_greed, "headlines": headlines[:10], "gemini_analysis": ai_summary}
     set_cache("news_macro", payload)
     return payload
 
 
 class PaperTradeIn(BaseModel):
     symbol: str
+    market: str = "CRYPTO"
     budget_inr: float
     buy_price_inr: float
     target_inr: float
     stop_loss_inr: float
     hold_label: str = "1-2 Days (Swing)"
-
-
-@app.post("/api/alerts/auto-cycle")
-async def trigger_auto_cycle():
-    return await run_auto_signal_cycle(min_score=65.0)
 
 
 @app.get("/api/trades")
@@ -774,6 +1036,7 @@ async def create_trade(trade: PaperTradeIn):
     row = {
         "id": str(uuid.uuid4())[:8],
         "symbol": trade.symbol.upper(),
+        "market": trade.market.upper(),
         "budget_inr": round(trade.budget_inr, 2),
         "buy_price_inr": round(trade.buy_price_inr, 2),
         "target_inr": round(trade.target_inr, 2),
@@ -788,21 +1051,15 @@ async def create_trade(trade: PaperTradeIn):
 
 @app.get("/api/trades/export")
 async def export_trades_csv():
-    """Exports all trades with 1% TDS estimate as downloadable CSV."""
     _, trades = await fetch_all_trades()
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["ID", "Symbol", "Budget (INR)", "Buy Price (INR)", "Target (INR)", "Stop Loss (INR)", "Status", "Est. 1% TDS (INR)"])
+    writer.writerow(["ID", "Market", "Symbol", "Budget (INR)", "Buy (INR)", "Target (INR)", "SL (INR)", "Hold", "Status", "Duration"])
     for t in trades:
-        budget = float(t.get("budget_inr") or 0)
         writer.writerow([
-            t.get("id"), t.get("symbol"), budget,
+            t.get("id"), t.get("market", "CRYPTO"), t.get("symbol"), t.get("budget_inr"),
             t.get("buy_price_inr"), t.get("target_inr"), t.get("stop_loss_inr"),
-            t.get("status"), round(budget * 0.01, 2)
+            t.get("hold_label"), t.get("status"), t.get("duration_str", "")
         ])
     buf.seek(0)
-    return StreamingResponse(
-        iter([buf.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=apexquant_inr_trades.csv"},
-    )
+    return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=apexquant_trades.csv"})
