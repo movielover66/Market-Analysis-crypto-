@@ -1,0 +1,9 @@
+{
+  "name": "TRADEIQ — NSE Equity Trading Intelligence",
+  "short_name": "TRADEIQ",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b1220",
+  "theme_color": "#0b1220",
+  "description": "Personal AI-Assisted NSE Cash Equity Trading Intelligence Platform (Paper Trading Only)"
+}

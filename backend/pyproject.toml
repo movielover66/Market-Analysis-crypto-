@@ -1,0 +1,9 @@
+[project]
+name = "tradeiq-backend"
+version = "0.1.0"
+description = "TRADEIQ — Deterministic AI-Assisted NSE Cash Equity Trading Intelligence Platform"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

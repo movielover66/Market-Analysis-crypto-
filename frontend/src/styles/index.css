@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-bg: #0b1220;
+  --color-surface: #111a2e;
+  --color-border: #1e2d4a;
+  --color-ink: #e8eef9;
+  --color-muted: #8b9bb8;
+  --color-accent: #38bdf8;
+}
+
+html, body {
+  max-width: 100vw;
+  overflow-x: hidden;
+  font-variant-numeric: tabular-nums;
+}
+
+.touch-target {
+  min-height: 44px;
+  min-width: 44px;
+}

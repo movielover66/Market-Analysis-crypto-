@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: tradeiq-nse-intelligence
+    runtime: python
+    buildCommand: pip install -r backend/requirements.txt && cd frontend && npm install --no-audit --no-fund && npm run build
+    startCommand: uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: APP_ENV
+        value: development
+      - key: DEMO_MODE
+        value: "false"
+      - key: ALLOWED_ORIGINS
+        value: "https://tradeiq-nse-intelligence.onrender.com"
+      # Legacy ApexQuant / existing Render environment variables are supported.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: ANGEL_API_KEY
+        sync: false
+      - key: ANGEL_CLIENT_CODE
+        sync: false
+      - key: ANGEL_PIN
+        sync: false
+      - key: ANGEL_TOTP_SECRET
+        sync: false
+      - key: GEMINI_API_KEYS
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: INTERNAL_JOB_TOKEN
+        generateValue: true
+      # Single-owner auth. Generate the hash locally: cd backend && python -m app.core.password_hash
+      - key: OWNER_PASSWORD_HASH
+        sync: false
+      - key: AUTH_JWT_SECRET
+        generateValue: true
+      - key: ENABLE_API_DOCS
+        value: "false"
