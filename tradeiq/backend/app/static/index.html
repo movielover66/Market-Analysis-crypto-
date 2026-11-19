@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b1220" />
+  <title>TRADEIQ — NSE Cash Equity Paper Trading Intelligence</title>
+  <style>[hidden]{display:none !important}</style>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans overflow-x-hidden">
+
+  <!-- ===================== OWNER LOGIN (the only thing visible before authentication) ===================== -->
+  <div id="login-view" class="min-h-screen flex flex-col items-center justify-center px-4 py-8">
+    <div class="w-full max-w-sm space-y-4">
+      <div class="text-center space-y-2">
+        <div class="text-3xl font-extrabold tracking-tight text-emerald-400">TRADEIQ</div>
+        <div class="text-xs text-slate-400">NSE Cash Equity Intelligence</div>
+        <span class="inline-block px-2 py-0.5 rounded text-[11px] font-mono bg-amber-500/20 text-amber-300 border border-amber-500/40">PAPER ONLY • OWNER ACCESS</span>
+      </div>
+
+      <form id="login-form" class="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-4" novalidate>
+        <div>
+          <h1 class="text-base font-bold text-slate-100">Owner sign in</h1>
+          <p class="text-xs text-slate-400 mt-1">This workspace is private. Enter the owner password to continue.</p>
+        </div>
+
+        <div id="login-notice" role="status" hidden class="rounded-lg bg-sky-500/10 border border-sky-500/30 px-3 py-2 text-xs text-sky-200"></div>
+
+        <input type="text" name="username" autocomplete="username" value="owner" tabindex="-1" aria-hidden="true" readonly class="sr-only" />
+
+        <div class="space-y-1.5">
+          <label for="owner-password" class="block text-xs font-medium text-slate-300">Owner password</label>
+          <div class="relative">
+            <input id="owner-password" name="password" type="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="256" placeholder="Enter password"
+              class="w-full min-h-[48px] pl-3 pr-16 rounded-lg bg-slate-950 border border-slate-700 text-base text-slate-100 placeholder-slate-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 disabled:opacity-60" />
+            <button type="button" id="toggle-password" aria-pressed="false" aria-label="Show password"
+              class="absolute inset-y-0 right-0 px-3 text-xs font-medium text-slate-400 hover:text-slate-200 min-w-[56px]">Show</button>
+          </div>
+        </div>
+
+        <div id="login-error" role="alert" hidden class="rounded-lg bg-rose-950/30 border border-rose-500/40 px-3 py-2 text-xs text-rose-200"></div>
+
+        <button id="login-submit" type="submit"
+          class="w-full min-h-[48px] rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-semibold text-white transition disabled:opacity-50 disabled:cursor-not-allowed">Sign in</button>
+      </form>
+
+      <p class="text-[11px] leading-relaxed text-slate-500 text-center px-2">
+        Analytical &amp; educational paper-trading tool only. Not investment advice, a guarantee of results, or a substitute for independent judgement.
+      </p>
+    </div>
+  </div>
+
+  <!-- ===================== WORKSPACE (hidden until a valid owner session exists) ===================== -->
+  <div id="app-view" hidden class="flex-1 flex flex-col">
+    <header class="sticky top-0 z-30 bg-slate-900/95 border-b border-slate-800 px-4 py-2.5 flex flex-wrap items-center justify-between gap-2">
+      <div class="flex items-center gap-2">
+        <span class="text-base font-extrabold text-emerald-400">TRADEIQ</span>
+        <span id="mode-badge" class="px-2 py-0.5 rounded text-[11px] font-mono bg-amber-500/20 text-amber-300 border border-amber-500/40">PAPER ONLY • SIMULATED/LIVE GUARD</span>
+      </div>
+      <div class="flex items-center gap-2 text-xs font-mono">
+        <span id="prov-badge" class="px-2 py-0.5 rounded bg-slate-800 text-sky-300">SOURCE: CHECKING...</span>
+        <span id="fresh-badge" class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">FRESHNESS: —</span>
+        <button id="logout-btn" type="button" class="min-h-[44px] min-w-[44px] px-3 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700">Sign out</button>
+      </div>
+    </header>
+
+    <div class="bg-slate-900/70 border-b border-slate-800 px-4 py-1.5 text-[11px] text-slate-400">
+      Analytical &amp; educational paper-trading tool only (NSE Cash Equities -EQ). Not investment advice or a guarantee of results.
+    </div>
+
+    <main class="flex-1 max-w-7xl w-full mx-auto p-4 pb-24 space-y-4">
+      <div class="flex flex-wrap gap-2">
+        <button data-action="scanner" class="min-h-[44px] px-3 py-2 rounded-lg bg-emerald-600 text-xs font-semibold text-white">Run NSE Scanner</button>
+        <button data-action="planner" class="min-h-[44px] px-3 py-2 rounded-lg bg-slate-800 text-xs text-slate-200">Evaluate RELIANCE Plan</button>
+        <button data-action="paper" class="min-h-[44px] px-3 py-2 rounded-lg bg-slate-800 text-xs text-slate-200">Paper Portfolio</button>
+        <button data-action="backtest" class="min-h-[44px] px-3 py-2 rounded-lg bg-slate-800 text-xs text-slate-200">Walk-Forward Backtest</button>
+        <button data-action="news" class="min-h-[44px] px-3 py-2 rounded-lg bg-slate-800 text-xs text-slate-200">NSE News &amp; RSS</button>
+        <button data-action="integrations" class="min-h-[44px] px-3 py-2 rounded-lg bg-sky-600/30 border border-sky-500/40 text-xs text-sky-200">Integration Status</button>
+      </div>
+
+      <div id="output-panel" class="p-4 rounded-xl bg-slate-900 border border-slate-800 text-xs font-mono text-slate-200 overflow-x-auto whitespace-pre-wrap">Loading TRADEIQ workspace...</div>
+    </main>
+  </div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      // Same session key as the React app. The token is kept in sessionStorage only, so it is cleared when the tab closes.
+      var TOKEN_KEY = 'tradeiq.owner.session';
+      var LOGIN_PATH = '/api/v1/auth/login';
+      var authToken = null;
+      var lockTimer = null;
+
+      var $ = function (id) { return document.getElementById(id); };
+      var loginView = $('login-view'), appView = $('app-view');
+      var form = $('login-form'), pwd = $('owner-password'), submitBtn = $('login-submit');
+      var errBox = $('login-error'), noticeBox = $('login-notice'), panel = $('output-panel');
+
+      /* ---------- session storage helpers ---------- */
+      function store() { try { return window.sessionStorage; } catch (e) { return null; } }
+      function tokenExpiryMs(t) {
+        try {
+          var b = t.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+          b += '='.repeat((4 - (b.length % 4)) % 4);
+          var c = JSON.parse(atob(b));
+          return typeof c.exp === 'number' ? c.exp * 1000 : null;
+        } catch (e) { return null; }
+      }
+      function clearSession() {
+        authToken = null;
+        try { var s = store(); if (s) s.removeItem(TOKEN_KEY); } catch (e) {}
+      }
+      function restoreSession() {
+        var t = null;
+        try { var s = store(); t = s ? s.getItem(TOKEN_KEY) : null; } catch (e) {}
+        if (!t) return false;
+        var exp = tokenExpiryMs(t);
+        if (exp !== null && exp <= Date.now()) { clearSession(); return false; }
+        authToken = t;
+        return true;
+      }
+
+      /* ---------- view switching ---------- */
+      function show(el, on) { el.hidden = !on; }
+      function showLogin(notice) {
+        clearSession();
+        panel.textContent = '';
+        show(appView, false); show(loginView, true);
+        errBox.textContent = ''; show(errBox, false);
+        noticeBox.textContent = notice || ''; show(noticeBox, !!notice);
+        pwd.value = ''; pwd.disabled = false; submitBtn.disabled = false; submitBtn.textContent = 'Sign in';
+        pwd.focus();
+      }
+      function showApp() {
+        show(loginView, false); show(appView, true);
+        loadIntegrations();
+      }
+
+      /* ---------- API (private calls always carry the Bearer token; none are made without one) ---------- */
+      function readError(res) { return res.json().then(function (b) { return (b && b.error) || {}; }, function () { return {}; }); }
+
+      function apiFetch(path, opts) {
+        if (!authToken) { showLogin('Please sign in to continue.'); return Promise.reject(new Error('Not signed in')); }
+        opts = opts || {};
+        var headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken };
+        return fetch(path, { method: opts.method || 'GET', headers: headers, body: opts.body }).then(function (res) {
+          if (res.status === 401) { showLogin('Your session has expired. Please sign in again.'); throw new Error('Session expired'); }
+          return res.json().catch(function () { return {}; }).then(function (data) {
+            if (!res.ok) {
+              var msg = res.status >= 500 ? 'The server hit an error. Please try again shortly.'
+                      : res.status === 429 ? 'Too many requests. Please wait and retry.'
+                      : res.status === 403 ? 'This account is not allowed to access TRADEIQ.'
+                      : ((data && data.error && data.error.message) || ('HTTP ' + res.status));
+              throw new Error(msg);
+            }
+            return data;
+          });
+        }, function () { throw new Error('Cannot reach the TRADEIQ server. Check your connection.'); });
+      }
+
+      function showJson(path, opts) {
+        panel.textContent = 'Fetching ' + path + ' ...';
+        apiFetch(path, opts).then(function (data) {
+          if (data.source) $('prov-badge').textContent = 'SOURCE: ' + data.source;
+          if (data.freshness) $('fresh-badge').textContent = 'FRESHNESS: ' + data.freshness;
+          panel.textContent = JSON.stringify(data, null, 2);
+        }).catch(function (e) {
+          if (authToken) panel.textContent = 'Error: ' + e.message; // if the session ended, the login screen is already showing
+        });
+      }
+
+      function loadScanner() { showJson('/api/v1/scanner?trading_mode=SWING&strategy_code=BREAKOUT_RETEST'); }
+      function loadPlanner() {
+        showJson('/api/v1/planner/evaluate', { method: 'POST', body: JSON.stringify({ symbol: 'RELIANCE', trading_mode: 'SWING', strategy_code: 'BREAKOUT_RETEST', capital_inr: 75000 }) });
+      }
+      function loadPaper() { showJson('/api/v1/paper/summary'); }
+      function loadBacktest() {
+        showJson('/api/v1/backtest/run', { method: 'POST', body: JSON.stringify({ symbol: 'RELIANCE', timeframe: '1d', strategy_code: 'BREAKOUT_RETEST' }) });
+      }
+      function loadNews() { showJson('/api/v1/news'); }
+      function loadIntegrations() { showJson('/api/v1/integrations/status'); }
+      var ACTIONS = { scanner: loadScanner, planner: loadPlanner, paper: loadPaper, backtest: loadBacktest, news: loadNews, integrations: loadIntegrations };
+
+      Array.prototype.forEach.call(document.querySelectorAll('[data-action]'), function (btn) {
+        btn.addEventListener('click', function () { var fn = ACTIONS[btn.getAttribute('data-action')]; if (fn) fn(); });
+      });
+      $('logout-btn').addEventListener('click', function () { showLogin(''); });
+
+      /* ---------- login ---------- */
+      function fmtWait(s) { return s < 60 ? s + ' second' + (s === 1 ? '' : 's') : Math.ceil(s / 60) + ' minute' + (Math.ceil(s / 60) === 1 ? '' : 's'); }
+      function setError(msg) { errBox.textContent = msg; show(errBox, !!msg); }
+
+      function startLock(seconds) {
+        clearInterval(lockTimer);
+        var left = seconds;
+        pwd.disabled = true; submitBtn.disabled = true;
+        submitBtn.textContent = 'Try again in ' + left + 's';
+        lockTimer = setInterval(function () {
+          left -= 1;
+          if (left <= 0) { clearInterval(lockTimer); pwd.disabled = false; submitBtn.disabled = false; submitBtn.textContent = 'Sign in'; pwd.focus(); }
+          else { submitBtn.textContent = 'Try again in ' + left + 's'; }
+        }, 1000);
+      }
+
+      $('toggle-password').addEventListener('click', function () {
+        var reveal = pwd.type === 'password';
+        pwd.type = reveal ? 'text' : 'password';
+        this.textContent = reveal ? 'Hide' : 'Show';
+        this.setAttribute('aria-pressed', String(reveal));
+        this.setAttribute('aria-label', reveal ? 'Hide password' : 'Show password');
+      });
+
+      form.addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        if (submitBtn.disabled) return;
+        if (!pwd.value) { setError('Enter your owner password to continue.'); pwd.focus(); return; }
+        setError(''); show(noticeBox, false);
+        submitBtn.disabled = true; submitBtn.textContent = 'Signing in…';
+
+        fetch(LOGIN_PATH, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pwd.value }) })
+          .then(function (res) {
+            if (res.ok) {
+              return res.json().catch(function () { return null; }).then(function (body) {
+                if (!body || typeof body.access_token !== 'string' || !body.access_token) throw { msg: 'The server returned an unexpected login response. Please try again.' };
+                authToken = body.access_token;
+                try { var s = store(); if (s) s.setItem(TOKEN_KEY, authToken); } catch (e) {}
+                pwd.value = '';
+                showApp();
+              });
+            }
+            return readError(res).then(function (e) {
+              var retry = parseInt(res.headers.get('Retry-After') || '', 10);
+              var out = { msg: '', lock: 0 };
+              if (res.status === 401) { out.msg = 'Incorrect password. Please try again.'; }
+              else if (res.status === 422) { out.msg = 'Enter your owner password to continue.'; }
+              else if (res.status === 429) { out.msg = retry > 0 ? 'Too many failed attempts. Try again in ' + fmtWait(retry) + '.' : 'Too many failed attempts. Please wait a few minutes and try again.'; out.lock = retry > 0 ? retry : 0; }
+              else if (res.status === 503) { out.msg = 'Owner login is not configured on this server. Check the deployment settings.'; }
+              else if (res.status >= 500) { out.msg = 'The server hit an error while signing you in. Please try again shortly.'; }
+              else { out.msg = e.message || ('Sign-in failed (HTTP ' + res.status + ').'); }
+              if (res.status === 401 || res.status === 429) pwd.value = '';
+              throw out;
+            });
+          })
+          .catch(function (err) {
+            setError(err && err.msg ? err.msg : 'Cannot reach the TRADEIQ server. Check your connection and try again.');
+            submitBtn.disabled = false; submitBtn.textContent = 'Sign in';
+            if (err && err.lock) startLock(err.lock); else pwd.focus();
+          });
+      });
+
+      /* ---------- boot: nothing private is requested unless a stored session exists ---------- */
+      if (restoreSession()) { showApp(); } else { showLogin(''); }
+
+      // Sign out automatically when the token's own expiry passes.
+      setInterval(function () {
+        if (!authToken) return;
+        var exp = tokenExpiryMs(authToken);
+        if (exp !== null && exp <= Date.now()) showLogin('Your session has expired. Please sign in again.');
+      }, 15000);
+    })();
+  </script>
+</body>
+</html>
