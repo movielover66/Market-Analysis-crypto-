@@ -169,6 +169,7 @@ class AutoPaperTrader:
         live_ltps: Dict[str, Decimal],
         now_ist: Optional[datetime.datetime] = None,
         telegram_notifier: Optional[Any] = None,
+        paper_store: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
         """
         Checks every OPEN paper position against LIVE LTP:
@@ -203,6 +204,11 @@ class AutoPaperTrader:
                     user_id=user_id, position_id=pos.position_id, planned_exit_price=ltp,
                     exit_reason="TARGET_HIT", now_ist_str=dt_ist.isoformat(),
                 )
+                if paper_store and getattr(paper_store, "is_configured", lambda: False)():
+                    try:
+                        paper_store.close_position(closed)
+                    except Exception:
+                        pass
                 self._update_streak_and_kill_switch(user_id, simulator, closed)
                 act = {"action": "CLOSED", "reason": "TARGET_HIT", "symbol": pos.symbol, "engine": pos.engine_code, "net_pnl_inr": str(closed.net_pnl_inr), "outcome": closed.outcome}
                 actions.append(act)
@@ -231,6 +237,11 @@ class AutoPaperTrader:
                     user_id=user_id, position_id=pos.position_id, planned_exit_price=ltp,
                     exit_reason=reason, now_ist_str=dt_ist.isoformat(),
                 )
+                if paper_store and getattr(paper_store, "is_configured", lambda: False)():
+                    try:
+                        paper_store.close_position(closed)
+                    except Exception:
+                        pass
                 self._update_streak_and_kill_switch(user_id, simulator, closed)
                 act = {"action": "CLOSED", "reason": reason, "symbol": pos.symbol, "engine": pos.engine_code, "net_pnl_inr": str(closed.net_pnl_inr), "outcome": closed.outcome}
                 actions.append(act)
@@ -258,6 +269,11 @@ class AutoPaperTrader:
                     user_id=user_id, position_id=pos.position_id, planned_exit_price=ltp,
                     exit_reason="INTRADAY_SQUARE_OFF", now_ist_str=dt_ist.isoformat(),
                 )
+                if paper_store and getattr(paper_store, "is_configured", lambda: False)():
+                    try:
+                        paper_store.close_position(closed)
+                    except Exception:
+                        pass
                 self._update_streak_and_kill_switch(user_id, simulator, closed)
                 act = {"action": "CLOSED", "reason": "INTRADAY_SQUARE_OFF", "symbol": pos.symbol, "engine": pos.engine_code, "net_pnl_inr": str(closed.net_pnl_inr), "outcome": closed.outcome}
                 actions.append(act)
@@ -339,6 +355,7 @@ class AutoPaperTrader:
         telegram_notifier: Optional[Any] = None,
         now_ist: Optional[datetime.datetime] = None,
         execute_entries: bool = True,
+        paper_store: Optional[Any] = None,
     ) -> Dict[str, Any]:
         dt_ist = now_ist or datetime.datetime.now(IST)
         self.last_cycle_ist = dt_ist.isoformat()
@@ -350,6 +367,7 @@ class AutoPaperTrader:
             live_ltps=live_ltps,
             now_ist=dt_ist,
             telegram_notifier=telegram_notifier,
+            paper_store=paper_store,
         )
 
         # Engine 0: Market Regime Gate
@@ -447,6 +465,11 @@ class AutoPaperTrader:
                     "entry_charges_inr": str(pos.entry_charges_inr),
                 }
                 opened_trades.append(opened_info)
+                if paper_store and getattr(paper_store, "is_configured", lambda: False)():
+                    try:
+                        paper_store.insert_position(pos)
+                    except Exception:
+                        pass
                 self._log("AUTO_OPEN_TRADE", opened_info)
                 if telegram_notifier and getattr(telegram_notifier, "enabled", False):
                     dir_icon = "🟢 AUTO BUY (LONG)" if pos.direction == "LONG" else "🔴 AUTO SELL (SHORT)"
