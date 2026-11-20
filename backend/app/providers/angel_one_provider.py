@@ -103,6 +103,7 @@ class AngelOneProvider(MarketDataProvider):
         self.session_created_ist: Optional[datetime.datetime] = None
         self._instruments: Dict[str, NormalizedInstrument] = {}
         self._latest_quotes: Dict[str, NormalizedQuote] = {}
+        self._candle_cache: Dict[str, Any] = {}
         self._ws: Any = None
         self._ws_thread: Optional[threading.Thread] = None
         self._ws_connected = False
@@ -204,6 +205,10 @@ class AngelOneProvider(MarketDataProvider):
         interval = INTERVALS.get(timeframe.lower())
         if not inst or not interval:
             return []
+        cache_key = f"{sym}:{timeframe.lower()}:{limit}"
+        cached = self._candle_cache.get(cache_key)
+        if cached and (time.time() - cached[0]) < 45.0:
+            return list(cached[1])
         minutes = INTERVAL_MINUTES[timeframe.lower()]
         now = datetime.datetime.now(IST)
         # Request enough calendar days to cover weekends/holidays and requested bars.
@@ -234,6 +239,8 @@ class AngelOneProvider(MarketDataProvider):
                     out.append(NormalizedCandle(f"nse-{sym.lower()}", sym, timeframe.lower(), dt.isoformat(), vals[0], vals[1], vals[2], vals[3], vol, closed, "UNADJUSTED", prov))
                 except Exception: continue
             self._last_error = None
+            if out:
+                self._candle_cache[cache_key] = (time.time(), list(out))
             return out
         except Exception as exc:
             self._last_error = f"candle request: {type(exc).__name__}: {str(exc)[:120]}"
@@ -247,12 +254,21 @@ class AngelOneProvider(MarketDataProvider):
         if not tokens: raise RuntimeError("No valid NSE tokens available for WebSocket subscription")
         ws = SmartWebSocketV2(self.jwt_token, self.api_key, self.client_code, self.feed_token, max_retry_attempt=5)
         token_map = {inst.provider_token: sym for sym, inst in self._instruments.items()}
+        # Also map Indian benchmark indices for sub-second live WebSocket streaming
+        token_map["99926000"] = "NIFTY 50"
+        token_map["99926009"] = "BANKNIFTY"
+        token_map["99919000"] = "SENSEX"
         tick_map = {inst.provider_token: inst.tick_size for inst in self._instruments.values()}
         def opened(*_):
             self._ws_connected = True
             self._last_error = None
             for i in range(0, len(tokens), 100):
                 ws.subscribe("tradeiq_nse", 2, [{"exchangeType": 1, "tokens": tokens[i:i+100]}])
+            try:
+                ws.subscribe("tradeiq_idx_nse", 2, [{"exchangeType": 1, "tokens": ["99926000", "99926009"]}])
+                ws.subscribe("tradeiq_idx_bse", 2, [{"exchangeType": 3, "tokens": ["99919000"]}])
+            except Exception:
+                pass
         def data(*args):
             msg = args[-1] if args else None
             quote = normalize_angel_ws_tick(msg, token_map, token_to_tick=tick_map)
@@ -309,6 +325,18 @@ class AngelOneProvider(MarketDataProvider):
             ]
         out: List[Dict[str, Any]] = []
         for name, exch, tok in specs:
+            with self._lock:
+                ws_q = self._latest_quotes.get(name)
+            if ws_q and ws_q.ltp > 0:
+                prev = ws_q.prev_close if ws_q.prev_close > 0 else ws_q.ltp
+                chg = (ws_q.ltp - prev).quantize(Decimal("0.05"))
+                pct = ((chg / prev) * Decimal("100")).quantize(Decimal("0.02")) if prev > 0 else Decimal("0.00")
+                out.append({
+                    "symbol": name, "exchange": exch, "ltp": str(ws_q.ltp),
+                    "prev_close": str(prev), "change_inr": str(chg), "change_pct": str(pct),
+                    "freshness": "LIVE", "source": "ANGEL_ONE_WS",
+                })
+                continue
             try:
                 self._throttle(0.35)
                 resp = self.smart.getMarketData("FULL", {exch: [tok]})
