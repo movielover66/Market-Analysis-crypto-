@@ -1530,28 +1530,52 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
                 </span>
               </div>
               <div className="space-y-2.5">
-                {(newsData?.items || newsData?.articles || []).slice(0, 12).map((n: any, i: number) => (
-                  <a
-                    key={i}
-                    href={n.link || n.url || '#'}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="block p-3 rounded-xl border hover:border-slate-500 transition"
-                    style={{ backgroundColor: '#0A0E17', borderColor: '#1B2436' }}
-                  >
-                    <div className="text-xs sm:text-sm font-semibold text-white leading-snug">{n.title}</div>
-                    <div className="flex items-center justify-between mt-1.5 text-[11px] text-slate-400">
-                      <span>
-                        {n.source} • {n.published_ist || n.published || ''}
-                      </span>
-                      {n.sentiment && (
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-200">
-                          {n.sentiment}
-                        </span>
-                      )}
-                    </div>
-                  </a>
-                ))}
+                {(newsData?.items || newsData?.articles || []).length === 0 ? (
+                  <div className="text-xs text-slate-500">Loading fresh Indian market headlines...</div>
+                ) : (
+                  (newsData?.items || newsData?.articles || []).slice(0, 15).map((n: any, i: number) => {
+                    const headline = n.headline || n.title || 'Market Update';
+                    const srcName = n.source_name || n.source || 'Indian Market RSS';
+                    const pub = n.published_at_ist || n.published_ist || n.published || '';
+                    const href = n.source_url || n.link || n.url || '#';
+                    const sent = String(n.sentiment || 'NEUTRAL').toUpperCase();
+                    const sentColor =
+                      sent === 'BULLISH' ? '#00E676' : sent === 'BEARISH' || sent === 'HIGH_RISK' ? '#FF3B5C' : '#94A3B8';
+                    const sentBg =
+                      sent === 'BULLISH'
+                        ? 'rgba(0,230,118,0.14)'
+                        : sent === 'BEARISH' || sent === 'HIGH_RISK'
+                        ? 'rgba(255,59,92,0.14)'
+                        : 'rgba(148,163,184,0.12)';
+                    return (
+                      <a
+                        key={n.news_id || i}
+                        href={href}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="block p-3 rounded-xl border hover:border-slate-500 transition"
+                        style={{ backgroundColor: '#0A0E17', borderColor: '#1B2436' }}
+                      >
+                        <div className="text-xs sm:text-sm font-semibold text-white leading-snug">{headline}</div>
+                        {n.shield_note && (
+                          <div className="text-[11px] text-slate-400 mt-1">{n.shield_note}</div>
+                        )}
+                        <div className="flex items-center justify-between gap-2 mt-2 text-[11px] text-slate-400">
+                          <span className="truncate">
+                            {srcName}
+                            {pub ? ` • ${String(pub).slice(0, 19).replace('T', ' ')}` : ''}
+                          </span>
+                          <span
+                            className="shrink-0 text-[10px] font-bold px-2 py-0.5 rounded"
+                            style={{ backgroundColor: sentBg, color: sentColor }}
+                          >
+                            {sent}
+                          </span>
+                        </div>
+                      </a>
+                    );
+                  })
+                )}
               </div>
             </div>
 
