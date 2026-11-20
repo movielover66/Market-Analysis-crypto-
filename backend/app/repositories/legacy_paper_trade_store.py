@@ -58,7 +58,7 @@ class LegacyPaperTradeStore:
             "buy_price_inr": float(position.entry_fill_price),
             "target_inr": float(position.target_price),
             "stop_loss_inr": float(position.stop_loss),
-            "hold_label": position.trading_mode,
+            "hold_label": f"{position.trading_mode}|{getattr(position, 'engine_code', 'MANUAL')}|{getattr(position, 'direction', 'LONG')}",
             "status": "HOLDING",
             "created_at": int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
         }
@@ -100,6 +100,22 @@ class LegacyPaperTradeStore:
                 self.last_error = type(exc).__name__
                 self.last_operation = "close_failed"
                 return {"persisted": False, "error": self.last_error}
+
+
+    def delete_position(self, position_id: str) -> Dict[str, Any]:
+        """Explicit manual delete only — never called automatically on deploy or restart."""
+        if not self.is_configured():
+            return {"deleted": False, "error": "NOT_CONFIGURED"}
+        query = urllib.parse.urlencode({"id": f"eq.{position_id}"})
+        try:
+            self._request("DELETE", f"paper_trades?{query}")
+            self.last_error = None
+            self.last_operation = "delete"
+            return {"deleted": True, "id": position_id}
+        except Exception as exc:
+            self.last_error = type(exc).__name__
+            self.last_operation = "delete_failed"
+            return {"deleted": False, "error": self.last_error}
 
     def status_summary(self) -> Dict[str, Any]:
         return {"configured": self.is_configured(), "table": "paper_trades", "last_operation": self.last_operation,
