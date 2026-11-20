@@ -15,6 +15,7 @@ and enriches top stories with Gemini 2-line summaries + Sentiment Shield tags
 ("BULLISH" | "BEARISH" | "NEUTRAL" | "HIGH_RISK").
 """
 import datetime
+import email.utils
 import hashlib
 import html
 import json
@@ -40,15 +41,15 @@ _BROWSER_HEADERS = {
 }
 
 _INDIAN_MARKET_RSS_FEEDS: List[Tuple[str, str, str]] = [
-    ("Economic Times Markets", "MARKET", "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"),
-    ("Economic Times Stocks", "STOCKS", "https://economictimes.indiatimes.com/markets/stocks/rssfeeds/2146842.cms"),
-    ("Livemint Markets", "MARKET", "https://www.livemint.com/rss/markets"),
-    ("Moneycontrol Markets", "MARKET", "https://www.moneycontrol.com/rss/marketreports.xml"),
     (
         "Google News India Markets",
         "MARKET",
-        "https://news.google.com/rss/search?q=Nifty+OR+BankNifty+OR+Sensex+OR+NSE+India+when:2d&hl=en-IN&gl=IN&ceid=IN:en",
+        "https://news.google.com/rss/search?q=Nifty+OR+BankNifty+OR+Sensex+OR+NSE+stock+market+India+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
     ),
+    ("Economic Times Markets", "MARKET", "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"),
+    ("Economic Times Stocks", "STOCKS", "https://economictimes.indiatimes.com/markets/stocks/rssfeeds/2146842.cms"),
+    ("Livemint Markets", "MARKET", "https://www.livemint.com/rss/markets"),
+    ("Business Standard Markets", "MARKET", "https://www.business-standard.com/rss/markets-106.rss"),
 ]
 
 _HIGH_RISK_KEYWORDS = (
@@ -71,9 +72,29 @@ _TAG_STRIP_RE = re.compile(r"<[^>]+>")
 def _clean_text(raw: Optional[str], max_len: int = 320) -> str:
     if not raw:
         return ""
-    txt = html.unescape(_TAG_STRIP_RE.sub(" ", raw))
+    txt = html.unescape(html.unescape(raw))
+    txt = _TAG_STRIP_RE.sub(" ", txt)
+    txt = re.sub(r"#39;", "'", txt)
     txt = re.sub(r"\s+", " ", txt).strip()
     return txt[:max_len]
+
+
+def _parse_pub_date(raw_pub: str) -> Tuple[str, float]:
+    s = (raw_pub or "").strip()
+    dt = None
+    try:
+        dt = email.utils.parsedate_to_datetime(s)
+    except Exception:
+        pass
+    if dt is None:
+        try:
+            dt = datetime.datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except Exception:
+            dt = datetime.datetime.now(IST)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=IST)
+    dt_ist = dt.astimezone(IST)
+    return dt_ist.strftime("%d %b %Y, %I:%M %p IST"), dt_ist.timestamp()
 
 
 def _heuristic_sentiment(headline: str, summary: str = "") -> Tuple[str, str]:
@@ -113,6 +134,7 @@ class NewsItem:
     injection_sanitized: bool = False
     sentiment: str = "NEUTRAL"  # "BULLISH" | "BEARISH" | "NEUTRAL" | "HIGH_RISK"
     shield_note: Optional[str] = None
+    published_epoch: float = 0.0
     disclaimer: str = "External news aggregated for informational analysis only."
 
 
@@ -150,12 +172,14 @@ class NewsAndAlertsService:
 
         det_sent, shield_note = _heuristic_sentiment(clean_h, clean_s or "")
         final_sent = (sentiment or det_sent).upper()
+        fmt_pub, pub_ep = _parse_pub_date(published_at_ist)
         item = NewsItem(
             news_id=chash[:12],
             headline=clean_h,
             source_name=source_name.strip(),
             source_url=source_url.strip(),
-            published_at_ist=published_at_ist,
+            published_at_ist=fmt_pub,
+            published_epoch=pub_ep,
             related_symbol=related_symbol.upper() if related_symbol else None,
             content_hash=chash,
             category=category.upper(),
@@ -187,6 +211,10 @@ class NewsAndAlertsService:
                 desc = _clean_text(item_el.findtext("description"), max_len=340)
                 pub = (item_el.findtext("pubDate") or datetime.datetime.now(IST).isoformat()).strip()
                 if title:
+                    _, ep = _parse_pub_date(pub)
+                    now_ep = datetime.datetime.now(IST).timestamp()
+                    if (now_ep - ep) > (7 * 86400):
+                        continue  # Skip stale archived RSS articles (e.g. 2024)
                     self.ingest_news_item(
                         headline=title,
                         source_name=source_name,
@@ -316,7 +344,7 @@ class NewsAndAlertsService:
         if symbol:
             s = symbol.strip().upper()
             items = [x for x in items if x.related_symbol == s or s in x.headline.upper()]
-        return sorted(items, key=lambda x: x.published_at_ist, reverse=True)
+        return sorted(items, key=lambda x: x.published_epoch, reverse=True)
 
     def evaluate_closed_candle_price_alert(
         self,
