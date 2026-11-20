@@ -386,7 +386,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
   // Derived data (with safe fallbacks so 0-out-of-0 NEVER appears!)
   const quotes: any[] = overview?.data?.quotes || [];
   const ledger = ledgerData?.ledger || autoStatus?.ledger || {};
-  const openPositions: any[] = ledger?.open_positions || [];
+  const openPositions: any[] = ledger?.open_positions_live || ledger?.open_positions || [];
   const closedTrades: any[] = ledgerData?.closed_trades || [];
 
   const watchedSymbols: string[] = autoStatus?.watched_symbols?.length
@@ -952,7 +952,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
                   ) : (
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       {openByHorizon[horizon].map((pos: any) => {
-                        const net = Number(pos.unrealised_net_pnl_inr ?? pos.net_pnl_inr ?? 0);
+                        const net = Number(pos.unrealised_net_inr ?? pos.unrealised_net_pnl_inr ?? pos.net_pnl_inr ?? 0);
                         const up = net >= 0;
                         const holdLabel = inferHoldLabel(pos.engine_code, pos.trading_mode, pos.hold_horizon);
                         return (
@@ -1008,7 +1008,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
                               <div>
                                 <div className="text-[10px] text-slate-500">Live LTP</div>
                                 <div className="text-xs font-bold text-white font-mono">
-                                  ₹{fmtNum(pos.live_ltp ?? pos.entry_fill_price)}
+                                  ₹{fmtNum(pos.current_ltp ?? pos.live_ltp ?? pos.entry_fill_price)}
                                 </div>
                               </div>
                               <div>
