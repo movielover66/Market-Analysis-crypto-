@@ -5,6 +5,7 @@ import {
   apiPost,
   apiPut,
   fetchDemoOverview,
+  getAuthToken,
   getTokenExpiryMs,
   ApiError,
   isUnauthorizedError,
@@ -169,6 +170,8 @@ function AuthenticatedApp({ onSignOut }: { onSignOut: () => void }) {
   const [activeTab, setActiveTab] = useState<TabKey>('dashboard');
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [wsLive, setWsLive] = useState(false);
+  const [lastTickIst, setLastTickIst] = useState<string>('');
 
   // Live core state
   const [indices, setIndices] = useState<any[]>([]);
@@ -271,9 +274,61 @@ function AuthenticatedApp({ onSignOut }: { onSignOut: () => void }) {
   useEffect(() => {
     if (!signedIn) return;
     loadCore();
-    const timer = setInterval(loadCore, 15000);
+    const timer = setInterval(loadCore, 30000);
     return () => clearInterval(timer);
   }, [signedIn, loadCore]);
+
+  // Real-Time 500ms WebSocket Live Ticker (/api/v1/ws/live)
+  useEffect(() => {
+    if (!signedIn) return;
+    const token = getAuthToken();
+    if (!token || typeof window === 'undefined') return;
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let closedByUnmount = false;
+
+    const connect = () => {
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${proto}//${window.location.host}/api/v1/ws/live?token=${encodeURIComponent(token)}`);
+      ws.onopen = () => setWsLive(true);
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg?.type !== 'LIVE_TICK') return;
+          if (msg.ts_ist) setLastTickIst(msg.ts_ist);
+          if (Array.isArray(msg.indices) && msg.indices.length > 0) setIndices(msg.indices);
+          if (Array.isArray(msg.quotes) && msg.quotes.length > 0) {
+            setOverview((prev: any) => ({
+              ...(prev || {}),
+              freshness: msg.freshness || prev?.freshness || 'LIVE',
+              data: { ...(prev?.data || {}), quotes: msg.quotes },
+            }));
+          }
+          if (msg.ledger) {
+            setLedgerData((prev: any) => ({ ...(prev || {}), ledger: msg.ledger }));
+          }
+        } catch {
+          /* ignore malformed frame */
+        }
+      };
+      ws.onclose = () => {
+        setWsLive(false);
+        if (!closedByUnmount) {
+          reconnectTimer = setTimeout(connect, 2500);
+        }
+      };
+      ws.onerror = () => {
+        try { ws?.close(); } catch { /* ignore */ }
+      };
+    };
+
+    connect();
+    return () => {
+      closedByUnmount = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      try { ws?.close(); } catch { /* ignore */ }
+    };
+  }, [signedIn]);
 
   useEffect(() => {
     if (!signedIn) return;
@@ -404,6 +459,7 @@ function AuthenticatedApp({ onSignOut }: { onSignOut: () => void }) {
                   {overview?.freshness === 'LIVE' ? 'LIVE FEED' : overview?.freshness || 'CHECKING'}
                 </Badge>
                 <Badge tone="sky">PAPER ONLY</Badge>
+                {wsLive && <Badge tone="emerald">⚡ {lastTickIst || "STREAMING"}</Badge>}
               </div>
               <div className="text-[11px] text-slate-400">3-Engine Live Auto Paper-Trading • Penny-Accurate P&amp;L</div>
             </div>
@@ -534,6 +590,36 @@ function AuthenticatedApp({ onSignOut }: { onSignOut: () => void }) {
                 </div>
               </Card>
             </div>
+
+            <Card
+              title="Live Auto-Trader Radar (Bot Watching Right Now)"
+              subtitle={`Watching ${autoStatus?.watched_symbols?.length || 0} active NSE stocks (out of ${autoStatus?.total_universe_count || 0}) • Last Scan: ${autoStatus?.last_cycle_ist ? String(autoStatus.last_cycle_ist).slice(11, 19) + ' IST' : 'Not scanned yet — click Run 3-Engine Auto Cycle'}`}
+              action={
+                <Badge tone={autoStatus?.scheduler_active ? 'emerald' : 'amber'}>
+                  {autoStatus?.scheduler_active ? 'AUTO SCHEDULER ON (09:00-15:30 IST)' : 'MANUAL / DEPLOY main.py FOR AUTO'}
+                </Badge>
+              }
+            >
+              <div className="space-y-2.5 text-xs">
+                <div className="flex flex-wrap gap-1.5">
+                  {(autoStatus?.watched_symbols || []).map((sym: string) => (
+                    <span key={sym} className="rounded-lg border border-slate-800 bg-slate-950 px-2 py-0.5 font-mono text-[11px] text-slate-300">{sym}</span>
+                  ))}
+                </div>
+                <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-3 flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-slate-300">
+                    {openRows.length > 0
+                      ? `${openRows.length} live paper trade(s) currently active and monitored every 60s.`
+                      : (autoStatus?.recent_signals?.length
+                          ? `Scanned ${autoStatus.recent_signals.length} top setups — 0 CONFIRMED yet (bot only enters 100% confirmed setups, never forces bad trades). Closest: ${autoStatus.recent_signals[0].symbol} (${autoStatus.recent_signals[0].score}% • ${autoStatus.recent_signals[0].engine_code}).`
+                          : 'Waiting for first 09:30 IST scan — or tap "Run 3-Engine Auto Cycle" right now to scan all stocks immediately.')}
+                  </div>
+                  <button onClick={() => runAutoCycle(true)} disabled={busy} className="rounded-xl bg-emerald-500 hover:bg-emerald-400 px-3 py-1.5 text-xs font-semibold text-slate-950">
+                    {busy ? <Spinner label="Scanning..." /> : 'Scan & Trade Now'}
+                  </button>
+                </div>
+              </div>
+            </Card>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
               <div className="lg:col-span-2">
