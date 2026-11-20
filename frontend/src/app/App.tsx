@@ -63,6 +63,18 @@ const errMsg = (ex: unknown, fallback: string): string => {
   return fallback;
 };
 
+function Spinner({ label }: { label?: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+        <path className="opacity-90" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+      </svg>
+      {label && <span>{label}</span>}
+    </span>
+  );
+}
+
 function Badge({ children, tone = 'slate' }: { children: React.ReactNode; tone?: 'emerald' | 'rose' | 'amber' | 'sky' | 'slate' }) {
   const cls: Record<string, string> = {
     emerald: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
@@ -413,9 +425,7 @@ function AuthenticatedApp({ onSignOut }: { onSignOut: () => void }) {
             <button
               onClick={loadCore}
               className="rounded-xl border border-slate-700 hover:border-sky-500 px-3 py-1.5 text-xs text-slate-200 transition"
-            >
-              Refresh
-            </button>
+            >{busy ? <Spinner label="Syncing" /> : 'Refresh'}</button>
           </div>
         </div>
 
@@ -473,6 +483,11 @@ function AuthenticatedApp({ onSignOut }: { onSignOut: () => void }) {
         </nav>
       </header>
 
+      {busy && (
+        <div className="fixed top-0 left-0 right-0 z-50 h-0.5 bg-sky-500/20 overflow-hidden">
+          <div className="h-full w-1/3 bg-sky-400 animate-pulse" />
+        </div>
+      )}
       {toast && (
         <div className="fixed bottom-4 right-4 z-50 rounded-xl border border-sky-500/40 bg-slate-900/95 px-4 py-2.5 text-xs text-sky-200 shadow-2xl">
           {toast}
@@ -526,9 +541,7 @@ function AuthenticatedApp({ onSignOut }: { onSignOut: () => void }) {
                   title="Live NSE Market Pulse"
                   subtitle="Click Chart or Plan on any live stock"
                   action={
-                    <button onClick={() => runAutoCycle(true)} disabled={busy} className="rounded-xl bg-emerald-500 hover:bg-emerald-400 px-3 py-1.5 text-xs font-semibold text-slate-950">
-                      Run 3-Engine Auto Cycle
-                    </button>
+                    <button onClick={() => runAutoCycle(true)} disabled={busy} className="rounded-xl bg-emerald-500 hover:bg-emerald-400 px-3 py-1.5 text-xs font-semibold text-slate-950">{busy ? <Spinner label="Scanning..." /> : 'Run 3-Engine Auto Cycle'}</button>
                   }
                 >
                   <div className="overflow-x-auto">
@@ -659,9 +672,7 @@ function AuthenticatedApp({ onSignOut }: { onSignOut: () => void }) {
                 <button onClick={() => saveAutoConfig(false)} disabled={busy} className="rounded-xl bg-sky-500 hover:bg-sky-400 px-4 py-2 text-xs font-semibold text-slate-950">
                   Save Config
                 </button>
-                <button onClick={() => runAutoCycle(true)} disabled={busy} className="rounded-xl bg-emerald-500 hover:bg-emerald-400 px-4 py-2 text-xs font-semibold text-slate-950">
-                  Run Auto-Trade Now
-                </button>
+                <button onClick={() => runAutoCycle(true)} disabled={busy} className="rounded-xl bg-emerald-500 hover:bg-emerald-400 px-4 py-2 text-xs font-semibold text-slate-950">{busy ? <Spinner label="Running..." /> : 'Run Auto-Trade Now'}</button>
                 <button onClick={() => sendDailySummary(true)} disabled={busy} className="rounded-xl border border-sky-500/40 bg-sky-500/10 px-4 py-2 text-xs text-sky-200">
                   Send Daily Telegram Summary
                 </button>
@@ -769,9 +780,7 @@ function AuthenticatedApp({ onSignOut }: { onSignOut: () => void }) {
             title="3-Engine Live Setup Scanner"
             subtitle={engineScan?.regime?.summary || 'Engine 1 (ORB+VWAP+Depth), Engine 2A (Minervini VCP), Engine 2B (Connors RSI-2)'}
             action={
-              <button onClick={() => runAutoCycle(false)} disabled={busy} className="rounded-xl bg-sky-500 hover:bg-sky-400 px-3.5 py-1.5 text-xs font-semibold text-slate-950">
-                Rescan All 3 Engines
-              </button>
+              <button onClick={() => runAutoCycle(false)} disabled={busy} className="rounded-xl bg-sky-500 hover:bg-sky-400 px-3.5 py-1.5 text-xs font-semibold text-slate-950">{busy ? <Spinner label="Scanning..." /> : 'Rescan All 3 Engines'}</button>
             }
           >
             <div className="overflow-x-auto">
@@ -928,9 +937,7 @@ function AuthenticatedApp({ onSignOut }: { onSignOut: () => void }) {
                   placeholder="Optional symbol (e.g. RELIANCE)"
                   className="w-48 rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs text-white"
                 />
-                <button onClick={refreshNews} disabled={busy} className="rounded-xl bg-sky-500 hover:bg-sky-400 px-3.5 py-1.5 text-xs font-semibold text-slate-950">
-                  Fetch Live News
-                </button>
+                <button onClick={refreshNews} disabled={busy} className="rounded-xl bg-sky-500 hover:bg-sky-400 px-3.5 py-1.5 text-xs font-semibold text-slate-950">{busy ? <Spinner label="Fetching..." /> : 'Fetch Live News'}</button>
               </div>
             }
           >
@@ -993,9 +1000,7 @@ function AuthenticatedApp({ onSignOut }: { onSignOut: () => void }) {
                     }
                   }}
                   className="rounded-xl bg-sky-500 px-3.5 py-1.5 text-xs font-semibold text-slate-950"
-                >
-                  Evaluate Setup
-                </button>
+                >{busy ? <Spinner label="Evaluating..." /> : 'Evaluate Setup'}</button>
               </div>
             }
           >
@@ -1043,14 +1048,17 @@ function AuthenticatedApp({ onSignOut }: { onSignOut: () => void }) {
                       }
                     }}
                     className="rounded-xl bg-sky-500 px-4 py-2 text-xs font-semibold text-slate-950"
-                  >
-                    Ask Gemini
-                  </button>
+                  >{busy ? <Spinner label="Thinking..." /> : 'Ask Gemini'}</button>
                 </div>
                 {aiReply && (
                   <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 text-xs space-y-2">
                     <div className="flex items-center gap-2"><Badge tone="sky">{aiReply.mode}</Badge><Badge tone="slate">{aiReply.plan_status}</Badge></div>
                     <p className="text-slate-200 leading-relaxed">{aiReply.answer}</p>
+                    {aiReply.gemini_last_error && (
+                      <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] font-mono text-amber-200">
+                        Gemini Diagnostic: {aiReply.gemini_last_error}
+                      </div>
+                    )}
                   </div>
                 )}
               </Card>
@@ -1094,9 +1102,7 @@ function AuthenticatedApp({ onSignOut }: { onSignOut: () => void }) {
                     setBtResult(r?.backtest || r);
                   }}
                   className="rounded-xl bg-emerald-500 px-4 py-2 text-xs font-semibold text-slate-950"
-                >
-                  Run Backtest
-                </button>
+                >{busy ? <Spinner label="Testing..." /> : 'Run Backtest'}</button>
               </div>
               {btResult && (
                 <div className="grid grid-cols-2 gap-2 text-xs font-mono">
