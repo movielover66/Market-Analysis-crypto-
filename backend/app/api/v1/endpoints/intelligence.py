@@ -813,6 +813,24 @@ def _enrich_ledger_horizons(ledger: Dict[str, Any]) -> Dict[str, Any]:
         pos["hold_horizon"] = hm["hold_horizon"]
     return ledger
 
+
+
+@router.delete("/paper/positions/{position_id}")
+async def api_delete_paper_position(
+    position_id: str,
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Manual owner-only deletion for mistaken paper trades; never invoked automatically."""
+    sim = request.app.state.paper_simulator
+    pos = sim.positions.get(position_id)
+    if pos and pos.user_id == user.user_id:
+        del sim.positions[position_id]
+    store = getattr(request.app.state, "legacy_paper_store", None)
+    db_res = await asyncio.to_thread(store.delete_position, position_id) if (store and store.is_configured()) else {"deleted": False}
+    return {"deleted": True, "position_id": position_id, "supabase": db_res}
+
+
 @router.get("/paper/ledger")
 async def api_paper_ledger(
     request: Request,
@@ -971,6 +989,7 @@ def _execute_three_engine_cycle(
         news_risk_by_sym=news_risk,
         telegram_notifier=tg,
         execute_entries=execute_entries,
+        paper_store=getattr(request.app.state, "legacy_paper_store", None),
     )
 
 
