@@ -225,12 +225,16 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
     if (!token || typeof window === 'undefined') return;
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let syncGraceTimer: ReturnType<typeof setTimeout> | null = null;
     let closedByUnmount = false;
 
     const connect = () => {
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(`${proto}//${window.location.host}/api/v1/ws/live?token=${encodeURIComponent(token)}`);
-      ws.onopen = () => setWsLive(true);
+      ws.onopen = () => {
+        if (syncGraceTimer) { clearTimeout(syncGraceTimer); syncGraceTimer = null; }
+        setWsLive(true);
+      };
       ws.onmessage = (ev) => {
         try {
           const msg = JSON.parse(ev.data);
@@ -252,9 +256,11 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
         }
       };
       ws.onclose = () => {
-        setWsLive(false);
+        if (!syncGraceTimer) {
+          syncGraceTimer = setTimeout(() => setWsLive(false), 3500);
+        }
         if (!closedByUnmount) {
-          reconnectTimer = setTimeout(connect, 2500);
+          reconnectTimer = setTimeout(connect, 1500);
         }
       };
       ws.onerror = () => {
@@ -270,6 +276,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
     return () => {
       closedByUnmount = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (syncGraceTimer) clearTimeout(syncGraceTimer);
       try {
         ws?.close();
       } catch {
@@ -1425,7 +1432,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-extrabold text-white">Angel One 5-Level Order Book Depth ({chartSymbol})</h3>
                 <span className="text-xs font-bold font-mono" style={{ color: '#00D4FF' }}>
-                  {depthData?.pressure || 'LIVE SNAPQUOTE'}
+                  {depthData?.imbalance?.pressure || depthData?.pressure || 'LIVE SNAPQUOTE'}
                 </span>
               </div>
               <div className="grid grid-cols-2 gap-3">
@@ -1434,7 +1441,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
                     <span>Bid Price</span>
                     <span>Qty</span>
                   </div>
-                  {(depthData?.bids || []).slice(0, 5).map((b: any, i: number) => (
+                  {(depthData?.depth?.best_5_buy || depthData?.bids || []).slice(0, 5).map((b: any, i: number) => (
                     <div
                       key={i}
                       className="flex justify-between px-2.5 py-1.5 rounded-lg border text-xs font-mono"
@@ -1452,7 +1459,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
                     <span>Ask Price</span>
                     <span>Qty</span>
                   </div>
-                  {(depthData?.asks || []).slice(0, 5).map((a: any, i: number) => (
+                  {(depthData?.depth?.best_5_sell || depthData?.asks || []).slice(0, 5).map((a: any, i: number) => (
                     <div
                       key={i}
                       className="flex justify-between px-2.5 py-1.5 rounded-lg border text-xs font-mono"
