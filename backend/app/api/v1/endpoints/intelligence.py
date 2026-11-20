@@ -555,9 +555,18 @@ async def api_assistant_query(payload: AssistantQueryRequest, request: Request):
             "validation_passed": True,
         }
 
+    # Auto-detect NSE symbol mentioned in the user's question (e.g. "Why did HAL pass or fail?" -> HAL)
+    import re as _re
+    target_sym = payload.symbol.upper()
+    q_tokens = set(_re.findall(r"\b[A-Z0-9&-]{2,15}\b", payload.question.upper()))
+    universe_set = {s.upper() for s in NSE_LIQUID_CASH_UNIVERSE}
+    matched_syms = [tok for tok in q_tokens if tok in universe_set]
+    if matched_syms:
+        target_sym = matched_syms[0]
+
     eval_res = await asyncio.to_thread(
         _evaluate_symbol_pipeline,
-        payload.symbol,
+        target_sym,
         payload.trading_mode,
         payload.strategy_code,
         Decimal("75000.00"),
