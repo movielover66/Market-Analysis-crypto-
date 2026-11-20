@@ -104,14 +104,39 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                         status = "OPEN" if str(row.get("status", "")).upper() == "HOLDING" else "CLOSED"
                         created = datetime.datetime.fromtimestamp(int(row.get("created_at") or 0), tz=datetime.timezone.utc).astimezone(datetime.timezone(datetime.timedelta(hours=5, minutes=30))).isoformat()
                         exit_price = Decimal(str(row.get("exit_price_inr") or "0")) or None
+                        raw_label = str(row.get("hold_label") or "SWING")
+                        parts = [x.strip() for x in raw_label.split("|")]
+                        t_mode = parts[0] if len(parts) >= 1 and parts[0] else "SWING"
+                        eng_code = parts[1] if len(parts) >= 2 and parts[1] else ("ENGINE_1_ORB" if t_mode.upper() == "INTRADAY" else "ENGINE_2A_VCP")
+                        direction = parts[2] if len(parts) >= 3 and parts[2] in ("LONG", "SHORT") else "LONG"
+                        closed_ts = row.get("closed_at")
+                        closed_ist = (
+                            datetime.datetime.fromtimestamp(int(closed_ts), tz=datetime.timezone.utc)
+                            .astimezone(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+                            .isoformat()
+                            if closed_ts else None
+                        )
+                        gross_pnl = Decimal("0.00")
+                        net_pnl = Decimal("0.00")
+                        outcome = None
+                        if status == "CLOSED" and exit_price and buy > 0:
+                            gross_pnl = (
+                                ((exit_price - buy) * Decimal(str(qty)))
+                                if direction == "LONG"
+                                else ((buy - exit_price) * Decimal(str(qty)))
+                            ).quantize(Decimal("0.01"))
+                            net_pnl = gross_pnl
+                            outcome = "WIN" if net_pnl > 0 else ("LOSS" if net_pnl < 0 else "BREAKEVEN")
                         pos = PaperPosition(
                             position_id=str(row.get("id") or ""), user_id=cfg.owner_id, plan_id=None,
-                            symbol=symbol, trading_mode=str(row.get("hold_label") or "SWING"), direction="LONG",
+                            symbol=symbol, trading_mode=t_mode, direction=direction,
                             status=status, quantity=qty, planned_entry=buy, entry_fill_price=buy,
                             stop_loss=Decimal(str(row.get("stop_loss_inr") or "0")),
                             target_price=Decimal(str(row.get("target_inr") or "0")),
-                            exit_fill_price=exit_price, exit_reason="LEGACY_CLOSED" if status == "CLOSED" else None,
-                            opened_at_ist=created,
+                            exit_fill_price=exit_price, exit_reason="SUPABASE_RESTORED" if status == "CLOSED" else None,
+                            gross_pnl_inr=gross_pnl, net_pnl_inr=net_pnl,
+                            opened_at_ist=created, closed_at_ist=closed_ist,
+                            engine_code=eng_code, outcome=outcome,
                         )
                         if pos.position_id:
                             app.state.paper_simulator.positions[pos.position_id] = pos
@@ -212,7 +237,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
                 quotes_out = []
                 ltp_map: dict = {}
                 for inst in insts:
-                    q = provider.get_quote(inst.symbol)
+                    try:
+                        q = provider.get_quote(inst.symbol)
+                    except Exception:
+                        continue
                     if not q or q.ltp <= 0:
                         continue
                     ltp = Decimal(str(q.ltp))
@@ -370,7 +398,7 @@ async def _ist_background_scheduler(app: FastAPI) -> None:
                     if open_syms:
                         try:
                             live_ltps = await asyncio.to_thread(_collect_live_ltps, dummy_req, open_syms)
-                            await asyncio.to_thread(at.monitor_open_positions, cfg.owner_id, sim, live_ltps, now_ist, tg)
+                            await asyncio.to_thread(at.monitor_open_positions, cfg.owner_id, sim, live_ltps, now_ist, tg, getattr(app.state, "legacy_paper_store", None))
                         except Exception as exc:
                             logger.warning(f"Position monitor error: {type(exc).__name__}: {exc}")
 
