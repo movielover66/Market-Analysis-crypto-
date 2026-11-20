@@ -31,6 +31,35 @@ from ..domain.strategies.three_engine import (
 
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
 
+def get_horizon_meta(engine_code: str, trading_mode: str = "INTRADAY") -> Dict[str, str]:
+    """Maps engine/mode to explicit UI bucket and human-readable hold timeframe."""
+    ec = (engine_code or "").upper()
+    tm = (trading_mode or "").upper()
+    if "ENGINE_1" in ec or "ORB" in ec or tm == "INTRADAY":
+        return {
+            "horizon_bucket": "intraday",
+            "horizon_label": "Intraday (Today)",
+            "hold_horizon": "Intraday • 2–5 hrs (Auto-Exit 3:15 PM IST)",
+        }
+    if "ENGINE_2B" in ec or "RSI2" in ec:
+        return {
+            "horizon_bucket": "swing",
+            "horizon_label": "Short Swing",
+            "hold_horizon": "Short Swing • 2–4 Trading Days",
+        }
+    if "ENGINE_2A" in ec or "VCP" in ec:
+        return {
+            "horizon_bucket": "positional",
+            "horizon_label": "Positional / Long",
+            "hold_horizon": "Positional • 1–4 Weeks",
+        }
+    return {
+        "horizon_bucket": "swing",
+        "horizon_label": "Short Swing",
+        "hold_horizon": "Short Swing • 2–4 Trading Days",
+    }
+
+
 
 @dataclass
 class AutoTraderConfig:
@@ -75,6 +104,13 @@ class AutoPaperTrader:
         self.execution_log: List[Dict[str, Any]] = []
         self.last_cycle_ist: Optional[str] = None
         self.last_daily_summary_date: Optional[str] = None
+        self.last_scan_stats: Dict[str, Any] = {
+            'scanned_symbols': 0,
+            'evaluated_count': 0,
+            'confirmed_count': 0,
+            'watchlist_count': 0,
+            'rejected_count': 0,
+        }
 
     def update_config(self, updates: Dict[str, Any]) -> Dict[str, Any]:
         c = self.config
@@ -174,9 +210,11 @@ class AutoPaperTrader:
                 if telegram_notifier and getattr(telegram_notifier, "enabled", False):
                     sign = "+" if closed.net_pnl_inr > 0 else ""
                     badge = "✅ WIN" if closed.outcome == "WIN" else ("❌ LOSS" if closed.outcome == "LOSS" else "⚖️ BREAKEVEN")
+                    hm = get_horizon_meta(pos.engine_code, pos.trading_mode)
                     telegram_notifier.send_closed_candle_alert(
                         f"🎯 TARGET HIT — {pos.symbol}",
                         (
+                            f"⏱ Hold Timeframe: {hm['hold_horizon']}\n"
                             f"⚙️ Engine: {pos.engine_code} ({pos.trading_mode})\n\n"
                             f"💵 Exit Price: ₹{closed.exit_fill_price}  |  Qty: {pos.quantity}\n"
                             f"💰 Net P&L: {sign}₹{closed.net_pnl_inr}  ({badge})"
@@ -201,9 +239,11 @@ class AutoPaperTrader:
                     sign = "+" if closed.net_pnl_inr > 0 else ""
                     icon = "🛡️" if "BREAKEVEN" in reason or "TRAILING" in reason else "🛑"
                     badge = "✅ WIN" if closed.outcome == "WIN" else ("❌ LOSS" if closed.outcome == "LOSS" else "⚖️ BREAKEVEN")
+                    hm = get_horizon_meta(pos.engine_code, pos.trading_mode)
                     telegram_notifier.send_closed_candle_alert(
                         f"{icon} {reason.replace('_', ' ')} — {pos.symbol}",
                         (
+                            f"⏱ Hold Timeframe: {hm['hold_horizon']}\n"
                             f"⚙️ Engine: {pos.engine_code} ({pos.trading_mode})\n\n"
                             f"💵 Exit Price: ₹{closed.exit_fill_price}  |  Qty: {pos.quantity}\n"
                             f"💰 Net P&L: {sign}₹{closed.net_pnl_inr}  ({badge})"
@@ -331,7 +371,14 @@ class AutoPaperTrader:
                 signals.append(evaluate_engine_2b_connors_rsi2(s_up, c1d, ob))
 
         signals.sort(key=lambda s: (1 if s.status == "CONFIRMED" else 0, s.score, s.expected_net_rr), reverse=True)
-        self.last_signals = [self._ser_signal(s) for s in signals[:40]]
+        self.last_signals = [self._ser_signal(s) for s in signals[:50]]
+        self.last_scan_stats = {
+            "scanned_symbols": len(symbols),
+            "evaluated_count": len(signals),
+            "confirmed_count": sum(1 for s in signals if s.status == "CONFIRMED"),
+            "watchlist_count": sum(1 for s in signals if s.status == "WATCHLIST"),
+            "rejected_count": sum(1 for s in signals if s.status == "REJECTED"),
+        }
 
         opened_trades: List[Dict[str, Any]] = []
         blocked_reasons: List[str] = []
@@ -385,10 +432,13 @@ class AutoPaperTrader:
                 available_cash -= (pos.entry_fill_price * Decimal(str(qty))) + pos.entry_charges_inr
                 open_symbols.add(sig.symbol)
                 open_count += 1
+                hm = get_horizon_meta(pos.engine_code, pos.trading_mode)
                 opened_info = {
                     "position_id": pos.position_id,
                     "symbol": pos.symbol,
                     "engine_code": pos.engine_code,
+                    "horizon_bucket": hm["horizon_bucket"],
+                    "hold_horizon": hm["hold_horizon"],
                     "direction": pos.direction,
                     "quantity": pos.quantity,
                     "entry_fill_price": str(pos.entry_fill_price),
@@ -403,11 +453,13 @@ class AutoPaperTrader:
                     telegram_notifier.send_closed_candle_alert(
                         f"{dir_icon} — {pos.symbol}",
                         (
-                            f"⚙️ Engine: {pos.engine_code} ({pos.trading_mode})\n\n"
+                            f"📌 Type: {hm['horizon_label'].upper()} ({pos.direction})\n"
+                            f"⏱ Hold Timeframe: {hm['hold_horizon']}\n"
+                            f"⚙️ Strategy: {pos.engine_code}\n\n"
                             f"💰 Entry: ₹{pos.entry_fill_price}  |  Qty: {pos.quantity}\n"
-                            f"🛑 Stop-Loss: ₹{pos.stop_loss}\n"
+                            f"🛡️ Stop-Loss: ₹{pos.stop_loss}\n"
                             f"🎯 Target: ₹{pos.target_price}\n\n"
-                            f"💡 {pos.rationale[:140]}"
+                            f"📊 Why: {pos.rationale[:160]}"
                         ),
                         dt_ist.strftime("%d %b %Y, %I:%M %p IST"),
                     )
@@ -494,11 +546,15 @@ class AutoPaperTrader:
 
     @staticmethod
     def _ser_signal(s: EngineSignal) -> Dict[str, Any]:
+        hm = get_horizon_meta(s.engine_code, s.trading_mode)
         return {
             "symbol": s.symbol,
             "engine_code": s.engine_code,
             "engine_name": s.engine_name,
             "trading_mode": s.trading_mode,
+            "horizon_bucket": hm["horizon_bucket"],
+            "horizon_label": hm["horizon_label"],
+            "hold_horizon": hm["hold_horizon"],
             "direction": s.direction,
             "status": s.status,
             "score": s.score,
