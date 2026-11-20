@@ -172,10 +172,16 @@ class AutoPaperTrader:
                 actions.append(act)
                 self._log("AUTO_CLOSE_TARGET", act)
                 if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                    sign = "+" if closed.net_pnl_inr > 0 else ""
+                    badge = "✅ WIN" if closed.outcome == "WIN" else ("❌ LOSS" if closed.outcome == "LOSS" else "⚖️ BREAKEVEN")
                     telegram_notifier.send_closed_candle_alert(
-                        pos.symbol,
-                        f"[{pos.engine_code}] TARGET HIT @ ₹{closed.exit_fill_price} | Net P&L: ₹{closed.net_pnl_inr} ({closed.outcome})",
-                        dt_ist.strftime("%Y-%m-%d %H:%M IST"),
+                        f"🎯 TARGET HIT — {pos.symbol}",
+                        (
+                            f"⚙️ Engine: {pos.engine_code} ({pos.trading_mode})\n\n"
+                            f"💵 Exit Price: ₹{closed.exit_fill_price}  |  Qty: {pos.quantity}\n"
+                            f"💰 Net P&L: {sign}₹{closed.net_pnl_inr}  ({badge})"
+                        ),
+                        dt_ist.strftime("%d %b %Y, %I:%M %p IST"),
                     )
                 continue
 
@@ -192,10 +198,17 @@ class AutoPaperTrader:
                 actions.append(act)
                 self._log("AUTO_CLOSE_SL", act)
                 if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                    sign = "+" if closed.net_pnl_inr > 0 else ""
+                    icon = "🛡️" if "BREAKEVEN" in reason or "TRAILING" in reason else "🛑"
+                    badge = "✅ WIN" if closed.outcome == "WIN" else ("❌ LOSS" if closed.outcome == "LOSS" else "⚖️ BREAKEVEN")
                     telegram_notifier.send_closed_candle_alert(
-                        pos.symbol,
-                        f"[{pos.engine_code}] {reason} @ ₹{closed.exit_fill_price} | Net P&L: ₹{closed.net_pnl_inr} ({closed.outcome})",
-                        dt_ist.strftime("%Y-%m-%d %H:%M IST"),
+                        f"{icon} {reason.replace('_', ' ')} — {pos.symbol}",
+                        (
+                            f"⚙️ Engine: {pos.engine_code} ({pos.trading_mode})\n\n"
+                            f"💵 Exit Price: ₹{closed.exit_fill_price}  |  Qty: {pos.quantity}\n"
+                            f"💰 Net P&L: {sign}₹{closed.net_pnl_inr}  ({badge})"
+                        ),
+                        dt_ist.strftime("%d %b %Y, %I:%M %p IST"),
                     )
                 continue
 
@@ -386,10 +399,17 @@ class AutoPaperTrader:
                 opened_trades.append(opened_info)
                 self._log("AUTO_OPEN_TRADE", opened_info)
                 if telegram_notifier and getattr(telegram_notifier, "enabled", False):
+                    dir_icon = "🟢 AUTO BUY (LONG)" if pos.direction == "LONG" else "🔴 AUTO SELL (SHORT)"
                     telegram_notifier.send_closed_candle_alert(
-                        pos.symbol,
-                        f"AUTO ENTRY [{pos.engine_code}] {pos.direction} x{pos.quantity} @ ₹{pos.entry_fill_price} | SL ₹{pos.stop_loss} | Target ₹{pos.target_price}",
-                        dt_ist.strftime("%Y-%m-%d %H:%M IST"),
+                        f"{dir_icon} — {pos.symbol}",
+                        (
+                            f"⚙️ Engine: {pos.engine_code} ({pos.trading_mode})\n\n"
+                            f"💰 Entry: ₹{pos.entry_fill_price}  |  Qty: {pos.quantity}\n"
+                            f"🛑 Stop-Loss: ₹{pos.stop_loss}\n"
+                            f"🎯 Target: ₹{pos.target_price}\n\n"
+                            f"💡 {pos.rationale[:140]}"
+                        ),
+                        dt_ist.strftime("%d %b %Y, %I:%M %p IST"),
                     )
 
         return {
@@ -433,15 +453,23 @@ class AutoPaperTrader:
         sls_hit = sum(1 for p in closed_today if "SL" in (p.exit_reason or ""))
         today_net = sum((p.net_pnl_inr for p in closed_today), Decimal("0.00")).quantize(Decimal("0.01"))
 
+        t_sign = "+" if today_net > 0 else ""
+        u_val = Decimal(str(ledger["unrealised_net_pnl_inr"]))
+        u_sign = "+" if u_val > 0 else ""
         lines = [
-            f"Daily Paper Summary ({today_str})",
-            f"Equity: ₹{ledger['total_equity_inr']} | Cash: ₹{ledger['available_cash_inr']}",
-            f"Today Closed: {len(closed_today)} (Targets: {targets_hit}, SLs: {sls_hit}) | Today Net P&L: ₹{today_net}",
-            f"Overall Accuracy: {ledger['accuracy_pct']}% ({ledger['wins']}W / {ledger['losses']}L) | PF: {ledger['profit_factor']}",
-            f"Open Positions: {ledger['open_count']} | Unrealised Net P&L: ₹{ledger['unrealised_net_pnl_inr']}",
+            f"📊 DAILY PAPER SUMMARY — {today_str}",
+            "",
+            f"💼 Live Equity: ₹{ledger['total_equity_inr']}",
+            f"💵 Available Cash: ₹{ledger['available_cash_inr']}",
+            "",
+            f"📈 Closed Today: {len(closed_today)}  (🎯 Targets: {targets_hit}  |  🛑 SLs: {sls_hit})",
+            f"💰 Today Net P&L: {t_sign}₹{today_net}",
+            "",
+            f"🏆 Accuracy: {ledger['accuracy_pct']}% ({ledger['wins']}W / {ledger['losses']}L)  |  PF: {ledger['profit_factor']}",
+            f"📂 Open Positions: {ledger['open_count']}  |  Unrealised: {u_sign}₹{ledger['unrealised_net_pnl_inr']}",
         ]
         if ai_review:
-            lines.append(f"AI Review: {ai_review[:240]}")
+            lines.extend(["", f"🤖 AI Review: {ai_review[:240]}"])
         message = "\n".join(lines)
 
         tg_result = {"delivered": False, "reason": "SEND_NOT_REQUESTED"}
