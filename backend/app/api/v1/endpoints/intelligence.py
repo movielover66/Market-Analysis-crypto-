@@ -1,3 +1,4 @@
+from ....jobs.auto_trader import get_horizon_meta
 import json
 """
 Phase 3–6 Endpoints + Unified Legacy Bridges:
@@ -188,7 +189,7 @@ def _evaluate_symbol_pipeline(
         candles_by_tf=candles_by_tf,
         risk_params=risk_params,
         account_state=account_state,
-        freshness=(c_1d[-1].freshness if c_1d else "UNAVAILABLE"),
+        freshness=(c_15m[-1].freshness if c_15m else (c_1d[-1].freshness if c_1d else (c_1h[-1].freshness if c_1h else "UNAVAILABLE"))),
     )
     llm_cb = build_gemini_callable(llm_client, user_question=user_question) if use_llm else None
     explanation = generate_grounded_explanation(plan, llm_callable=llm_cb, user_question=user_question)
@@ -802,6 +803,16 @@ class DailySummaryRequest(BaseModel):
     send_telegram: bool = False
 
 
+
+def _enrich_ledger_horizons(ledger: Dict[str, Any]) -> Dict[str, Any]:
+    """Attaches explicit horizon_bucket, horizon_label, and hold_horizon to open positions."""
+    for pos in ledger.get("open_positions") or []:
+        hm = get_horizon_meta(pos.get("engine_code", ""), pos.get("trading_mode", "INTRADAY"))
+        pos["horizon_bucket"] = hm["horizon_bucket"]
+        pos["horizon_label"] = hm["horizon_label"]
+        pos["hold_horizon"] = hm["hold_horizon"]
+    return ledger
+
 @router.get("/paper/ledger")
 async def api_paper_ledger(
     request: Request,
@@ -811,15 +822,19 @@ async def api_paper_ledger(
     at = request.app.state.auto_trader
     open_syms = [p.symbol for p in sim.positions.values() if p.user_id == user.user_id and p.status == "OPEN"]
     live_ltps = await asyncio.to_thread(_collect_live_ltps, request, open_syms)
-    ledger = sim.account_ledger(user.user_id, at.config.starting_balance_inr, live_ltps)
-    closed_rows = [
-        _ser(asdict(p))
-        for p in sorted(
-            [x for x in sim.positions.values() if x.user_id == user.user_id and x.status == "CLOSED"],
-            key=lambda x: x.closed_at_ist or "",
-            reverse=True,
-        )
-    ]
+    ledger = _enrich_ledger_horizons(sim.account_ledger(user.user_id, at.config.starting_balance_inr, live_ltps))
+    closed_rows = []
+    for p in sorted(
+        [x for x in sim.positions.values() if x.user_id == user.user_id and x.status == "CLOSED"],
+        key=lambda x: x.closed_at_ist or "",
+        reverse=True,
+    ):
+        row = _ser(asdict(p))
+        hm = get_horizon_meta(row.get("engine_code", ""), row.get("trading_mode", "INTRADAY"))
+        row["horizon_bucket"] = hm["horizon_bucket"]
+        row["horizon_label"] = hm["horizon_label"]
+        row["hold_horizon"] = hm["hold_horizon"]
+        closed_rows.append(row)
     return {
         "source": "DEMO" if request.app.state.settings.demo_mode else "ANGEL_ONE",
         "ledger": ledger,
@@ -836,7 +851,9 @@ async def api_auto_trader_status(
     at = request.app.state.auto_trader
     open_syms = [p.symbol for p in sim.positions.values() if p.user_id == user.user_id and p.status == "OPEN"]
     live_ltps = await asyncio.to_thread(_collect_live_ltps, request, open_syms)
-    ledger = sim.account_ledger(user.user_id, at.config.starting_balance_inr, live_ltps)
+    ledger = _enrich_ledger_horizons(sim.account_ledger(user.user_id, at.config.starting_balance_inr, live_ltps))
+    all_active = request.app.state.instrument_service.search("", active_only=True)
+    watched_syms = [i.symbol for i in all_active[:12]]
     return {
         "config": at.config.to_dict(),
         "kill_switch_active": at.kill_switch_active,
@@ -858,7 +875,17 @@ async def api_auto_trader_status(
             else None
         ),
         "ledger": ledger,
-        "recent_signals": at.last_signals[:15],
+        "watched_symbols": watched_syms,
+        "total_universe_count": len(all_active),
+        "scheduler_active": bool(getattr(request.app.state, "_scheduler_task", None)),
+        "scan_stats": getattr(at, "last_scan_stats", {
+            "scanned_symbols": len(watched_syms),
+            "evaluated_count": len(at.last_signals),
+            "confirmed_count": sum(1 for s in at.last_signals if s.get("status") == "CONFIRMED"),
+            "watchlist_count": sum(1 for s in at.last_signals if s.get("status") == "WATCHLIST"),
+            "rejected_count": sum(1 for s in at.last_signals if s.get("status") == "REJECTED"),
+        }),
+        "recent_signals": at.last_signals[:40],
         "execution_log": at.execution_log[:30],
     }
 
