@@ -806,7 +806,7 @@ class DailySummaryRequest(BaseModel):
 
 def _enrich_ledger_horizons(ledger: Dict[str, Any]) -> Dict[str, Any]:
     """Attaches explicit horizon_bucket, horizon_label, and hold_horizon to open positions."""
-    for pos in ledger.get("open_positions") or []:
+    for pos in (ledger.get("open_positions_live") or ledger.get("open_positions") or []):
         hm = get_horizon_meta(pos.get("engine_code", ""), pos.get("trading_mode", "INTRADAY"))
         pos["horizon_bucket"] = hm["horizon_bucket"]
         pos["horizon_label"] = hm["horizon_label"]
