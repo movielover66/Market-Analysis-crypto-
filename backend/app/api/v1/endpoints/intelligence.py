@@ -1,4 +1,4 @@
-from ....jobs.auto_trader import get_horizon_meta, run_multi_period_backtest
+from ....jobs.auto_trader import get_horizon_meta
 import json
 """
 Phase 3–6 Endpoints + Unified Legacy Bridges:
@@ -950,7 +950,6 @@ def _execute_three_engine_cycle(
     user_id: str,
     limit: int = 12,
     execute_entries: bool = True,
-    allowed_engines: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     provider = request.app.state.market_provider
     svc = request.app.state.instrument_service
@@ -1010,7 +1009,6 @@ def _execute_three_engine_cycle(
         telegram_notifier=tg,
         execute_entries=execute_entries,
         paper_store=getattr(request.app.state, "legacy_paper_store", None),
-        allowed_engines=allowed_engines,
     )
 
 
@@ -1235,43 +1233,3 @@ async def api_system_connectivity(
         "services": services,
         "panels": panels,
     }
-
-
-@router.post("/engines/backtest-multi")
-async def api_engines_backtest_multi(
-    request: Request,
-    limit: int = Query(12, ge=3, le=25),
-    user: AuthenticatedUser = Depends(get_current_user),
-):
-    """Runs real 3M, 1M, 1W, and 1D walk-forward backtest on live Angel One historical candles (or demo in test mode)."""
-    provider = request.app.state.market_provider
-    svc = request.app.state.instrument_service
-    at = request.app.state.auto_trader
-    syms = [i.symbol for i in svc.search("", active_only=True)[:limit]]
-    c1d_map: Dict[str, List[DomainCandle]] = {}
-    c15_map: Dict[str, List[DomainCandle]] = {}
-
-    def _fetch_all():
-        for sym in syms:
-            try:
-                c1d = _to_domain_candles(provider.get_candles(sym, "1d", 240))
-                if c1d:
-                    c1d_map[sym.upper()] = c1d
-            except Exception:
-                pass
-            try:
-                c15 = _to_domain_candles(provider.get_candles(sym, "15m", 40))
-                if c15:
-                    c15_map[sym.upper()] = c15
-            except Exception:
-                pass
-
-    await asyncio.to_thread(_fetch_all)
-    src = "DEMO_SYNTHETIC" if request.app.state.settings.demo_mode else "ANGEL_ONE_LIVE_HISTORICAL"
-    return run_multi_period_backtest(
-        symbols=syms,
-        candles_1d_by_sym=c1d_map,
-        candles_15m_by_sym=c15_map,
-        per_trade_amount_inr=at.config.per_trade_amount_inr,
-        data_source=src,
-    )
