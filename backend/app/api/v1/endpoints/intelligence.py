@@ -1,4 +1,4 @@
-from ....jobs.auto_trader import get_horizon_meta
+from ....jobs.auto_trader import get_horizon_meta, run_multi_period_backtest
 import json
 """
 Phase 3–6 Endpoints + Unified Legacy Bridges:
@@ -288,7 +288,7 @@ class OpenPaperPositionRequest(BaseModel):
 
 
 class ClosePaperPositionRequest(BaseModel):
-    exit_price: float
+    exit_price: Optional[float] = None
     exit_reason: str = "TARGET_HIT"
 
 
@@ -354,11 +354,30 @@ async def api_close_paper_position(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     sim = request.app.state.paper_simulator
+    eff_exit_px = payload.exit_price
+    if eff_exit_px is None or eff_exit_px <= 0:
+        pos_obj = sim.positions.get(position_id) if hasattr(sim, "positions") else None
+        if pos_obj is not None:
+            sym_u = str(getattr(pos_obj, "symbol", "")).upper()
+            pulse = getattr(request.app.state, "live_quotes", None) or {}
+            if sym_u in pulse and getattr(pulse[sym_u], "ltp", 0) > 0:
+                eff_exit_px = float(pulse[sym_u].ltp)
+            else:
+                try:
+                    q = request.app.state.market_provider.get_quote(sym_u)
+                    if q and getattr(q, "ltp", 0) > 0:
+                        eff_exit_px = float(q.ltp)
+                except Exception:
+                    pass
+                if not eff_exit_px or eff_exit_px <= 0:
+                    eff_exit_px = float(getattr(pos_obj, "current_ltp", 0) or getattr(pos_obj, "entry_fill_price", 0) or 0)
+        if not eff_exit_px or eff_exit_px <= 0:
+            raise HTTPException(status_code=400, detail="Missing exit_price and live LTP unavailable")
     try:
         closed = sim.close_paper_position(
             user_id=user.user_id,
             position_id=position_id,
-            planned_exit_price=Decimal(str(payload.exit_price)),
+            planned_exit_price=Decimal(str(eff_exit_px)),
             exit_reason=payload.exit_reason,
         )
     except KeyError as exc:
@@ -931,6 +950,7 @@ def _execute_three_engine_cycle(
     user_id: str,
     limit: int = 12,
     execute_entries: bool = True,
+    allowed_engines: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     provider = request.app.state.market_provider
     svc = request.app.state.instrument_service
@@ -990,6 +1010,7 @@ def _execute_three_engine_cycle(
         telegram_notifier=tg,
         execute_entries=execute_entries,
         paper_store=getattr(request.app.state, "legacy_paper_store", None),
+        allowed_engines=allowed_engines,
     )
 
 
@@ -1214,3 +1235,43 @@ async def api_system_connectivity(
         "services": services,
         "panels": panels,
     }
+
+
+@router.post("/engines/backtest-multi")
+async def api_engines_backtest_multi(
+    request: Request,
+    limit: int = Query(12, ge=3, le=25),
+    user: AuthenticatedUser = Depends(get_current_user),
+):
+    """Runs real 3M, 1M, 1W, and 1D walk-forward backtest on live Angel One historical candles (or demo in test mode)."""
+    provider = request.app.state.market_provider
+    svc = request.app.state.instrument_service
+    at = request.app.state.auto_trader
+    syms = [i.symbol for i in svc.search("", active_only=True)[:limit]]
+    c1d_map: Dict[str, List[DomainCandle]] = {}
+    c15_map: Dict[str, List[DomainCandle]] = {}
+
+    def _fetch_all():
+        for sym in syms:
+            try:
+                c1d = _to_domain_candles(provider.get_candles(sym, "1d", 240))
+                if c1d:
+                    c1d_map[sym.upper()] = c1d
+            except Exception:
+                pass
+            try:
+                c15 = _to_domain_candles(provider.get_candles(sym, "15m", 40))
+                if c15:
+                    c15_map[sym.upper()] = c15
+            except Exception:
+                pass
+
+    await asyncio.to_thread(_fetch_all)
+    src = "DEMO_SYNTHETIC" if request.app.state.settings.demo_mode else "ANGEL_ONE_LIVE_HISTORICAL"
+    return run_multi_period_backtest(
+        symbols=syms,
+        candles_1d_by_sym=c1d_map,
+        candles_15m_by_sym=c15_map,
+        per_trade_amount_inr=at.config.per_trade_amount_inr,
+        data_source=src,
+    )
