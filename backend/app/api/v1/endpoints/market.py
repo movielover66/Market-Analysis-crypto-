@@ -13,7 +13,7 @@ from ....services.instrument_service import InstrumentService
 
 router = APIRouter(tags=["market-and-providers"])
 
-_VALID_TIMEFRAMES = ("5m", "15m", "30m", "1h", "4h", "1d")
+_VALID_TIMEFRAMES = ("1m", "5m", "15m", "30m", "1h", "2h", "3h", "4h", "1d", "1M")
 
 
 def _fmt_dec(val: Any) -> Any:
