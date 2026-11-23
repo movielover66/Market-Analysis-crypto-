@@ -202,18 +202,59 @@ class AngelOneProvider(MarketDataProvider):
                 self._last_error = f"instrument lookup: {type(exc).__name__}"
                 return []
             inst = self._instruments.get(sym)
-        interval = INTERVALS.get(timeframe.lower())
+        tf_req = timeframe.strip()
+        tf_key = "1M" if tf_req == "1M" else tf_req.lower()
+        # Aggregate higher timeframes (2h, 3h, 4h from 1h; 1M from 1d) cleanly
+        if tf_key in ("2h", "3h", "4h"):
+            mult = int(tf_key[0])
+            base_bars = self.get_candles(sym, timeframe="1h", limit=min(240, limit * mult + mult))
+            if not base_bars:
+                return []
+            agg: List[NormalizedCandle] = []
+            for i in range(0, len(base_bars), mult):
+                chunk = base_bars[i:i + mult]
+                if not chunk:
+                    continue
+                first, last = chunk[0], chunk[-1]
+                agg.append(NormalizedCandle(
+                    first.instrument_id, first.symbol, tf_key, first.start_ts_ist,
+                    first.open, max(c.high for c in chunk), min(c.low for c in chunk),
+                    last.close, sum(c.volume for c in chunk), last.is_closed,
+                    first.adjustment_status, last.provenance,
+                ))
+            return agg[-limit:]
+        if tf_key == "1M":
+            daily_bars = self.get_candles(sym, timeframe="1d", limit=min(500, limit * 24))
+            if not daily_bars:
+                return []
+            buckets: Dict[str, List[NormalizedCandle]] = {}
+            for c in daily_bars:
+                ym = c.start_ts_ist[:7]
+                buckets.setdefault(ym, []).append(c)
+            agg_m: List[NormalizedCandle] = []
+            for ym in sorted(buckets.keys()):
+                chunk = buckets[ym]
+                first, last = chunk[0], chunk[-1]
+                agg_m.append(NormalizedCandle(
+                    first.instrument_id, first.symbol, "1M", first.start_ts_ist,
+                    first.open, max(c.high for c in chunk), min(c.low for c in chunk),
+                    last.close, sum(c.volume for c in chunk), last.is_closed,
+                    first.adjustment_status, last.provenance,
+                ))
+            return agg_m[-limit:]
+
+        interval = INTERVALS.get(tf_key)
         if not inst or not interval:
             return []
-        cache_key = f"{sym}:{timeframe.lower()}:{limit}"
+        cache_key = f"{sym}:{tf_key}:{limit}"
         cached = self._candle_cache.get(cache_key)
         if cached and (time.time() - cached[0]) < 45.0:
             return list(cached[1])
-        minutes = INTERVAL_MINUTES[timeframe.lower()]
+        minutes = INTERVAL_MINUTES[tf_key]
         now = datetime.datetime.now(IST)
         # Request enough calendar days to cover weekends/holidays and requested bars.
         days = max(5, int(limit * minutes / 375 * 2.2) + 4) if minutes < 1440 else max(45, limit * 2)
-        start = now - datetime.timedelta(days=min(days, 365))
+        start = now - datetime.timedelta(days=min(days, 1095))
         params = {"exchange": "NSE", "symboltoken": inst.provider_token, "interval": interval,
                   "fromdate": start.strftime("%Y-%m-%d %H:%M"), "todate": now.strftime("%Y-%m-%d %H:%M")}
         self._throttle()
