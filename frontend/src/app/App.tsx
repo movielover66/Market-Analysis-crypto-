@@ -162,6 +162,8 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
   const [cfgPerTrade, setCfgPerTrade] = useState('20000');
   const [cfgMaxPos, setCfgMaxPos] = useState('4');
   const [cfgDailyLoss, setCfgDailyLoss] = useState('1.50');
+  const [cfgLeverage, setCfgLeverage] = useState('1');
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [cfgEnabled, setCfgEnabled] = useState(true);
   const [cfgE1, setCfgE1] = useState(true);
   const [cfgE2a, setCfgE2a] = useState(true);
@@ -202,6 +204,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
         setCfgPerTrade(String(atRes.config.per_trade_amount_inr));
         setCfgMaxPos(String(atRes.config.max_open_positions));
         setCfgDailyLoss(String(atRes.config.daily_loss_limit_pct));
+        if (atRes.config.intraday_leverage !== undefined) setCfgLeverage(String(Math.round(Number(atRes.config.intraday_leverage) || 1)));
         setCfgEnabled(Boolean(atRes.config.enabled));
         setCfgE1(Boolean(atRes.config.enable_engine_1_orb));
         setCfgE2a(Boolean(atRes.config.enable_engine_2a_vcp));
@@ -218,6 +221,11 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
     const timer = setInterval(loadCore, 30000);
     return () => clearInterval(timer);
   }, [loadCore]);
+
+  useEffect(() => {
+    const t = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
 
   // Real-Time 500ms WebSocket Live Ticker (/api/v1/ws/live)
   useEffect(() => {
@@ -339,6 +347,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
         per_trade_amount_inr: Number(cfgPerTrade) || 20000,
         max_open_positions: Number(cfgMaxPos) || 4,
         daily_loss_limit_pct: Number(cfgDailyLoss) || 1.5,
+        intraday_leverage: Number(cfgLeverage) || 1,
         enable_engine_1_orb: cfgE1,
         enable_engine_2a_vcp: cfgE2a,
         enable_engine_2b_rsi2: cfgE2b,
@@ -968,69 +977,135 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
                             className="p-4 rounded-2xl border"
                             style={{ backgroundColor: '#0F1420', borderColor: '#1E293B' }}
                           >
-                            <div className="flex items-start justify-between gap-2">
-                              <div>
-                                <div className="flex items-center gap-2">
-                                  <span className="text-base font-extrabold text-white">{pos.symbol}</span>
-                                  <span
-                                    className="text-[10px] font-bold px-1.5 py-0.5 rounded"
-                                    style={{
-                                      backgroundColor: pos.direction === 'LONG' ? 'rgba(0,230,118,0.14)' : 'rgba(255,59,92,0.14)',
-                                      color: pos.direction === 'LONG' ? '#00E676' : '#FF3B5C',
-                                    }}
+                            {(() => {
+                              const entryP = Number(pos.entry_fill_price || 0);
+                              const ltpP = Number(pos.current_ltp ?? pos.live_ltp ?? entryP);
+                              const slP = Number(pos.stop_loss || 0);
+                              const origSlP = Number(pos.initial_stop_loss ?? slP);
+                              const tpP = Number(pos.target_price || 0);
+                              const isLong = pos.direction === 'LONG';
+                              const effLev = Number(pos.leverage || 1);
+                              const posVal = Number(pos.position_value_inr || entryP * Number(pos.quantity || 0));
+                              const marginUsed = Number(pos.margin_used_inr || posVal / Math.max(1, effLev));
+                              const ptsMoved = pos.points_moved !== undefined ? Number(pos.points_moved) : (isLong ? ltpP - entryP : entryP - ltpP);
+                              const pctMoved = pos.pct_moved !== undefined ? Number(pos.pct_moved) : (entryP > 0 ? (ptsMoved / entryP) * 100 : 0);
+                              const ptsToTp = pos.points_to_target !== undefined ? Number(pos.points_to_target) : Math.max(0, isLong ? tpP - ltpP : ltpP - tpP);
+                              const ptsFromSl = pos.points_from_sl !== undefined ? Number(pos.points_from_sl) : (isLong ? ltpP - slP : slP - ltpP);
+                              const slShift = pos.sl_shifted_pts !== undefined ? Number(pos.sl_shifted_pts) : (isLong ? slP - origSlP : origSlP - slP);
+                              const tpProg = pos.target_progress_pct !== undefined ? Number(pos.target_progress_pct) : Math.max(0, Math.min(100, Math.abs(tpP - entryP) > 0 ? (ptsMoved / Math.abs(tpP - entryP)) * 100 : 0));
+                              const liveR = pos.live_r_multiple !== undefined ? Number(pos.live_r_multiple) : (Math.abs(entryP - origSlP) > 0 ? ptsMoved / Math.abs(entryP - origSlP) : 0);
+                              const roiMargin = marginUsed > 0 ? (net / marginUsed) * 100 : 0;
+                              const openedMs = pos.opened_at_ist ? Date.parse(pos.opened_at_ist) : NaN;
+                              const elapsedSec = Number.isFinite(openedMs) ? Math.max(0, Math.floor((nowMs - openedMs) / 1000)) : 0;
+                              const eH = String(Math.floor(elapsedSec / 3600)).padStart(2, '0');
+                              const eM = String(Math.floor((elapsedSec % 3600) / 60)).padStart(2, '0');
+                              const eS = String(elapsedSec % 60).padStart(2, '0');
+                              const entryClock = Number.isFinite(openedMs)
+                                ? new Date(openedMs).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' })
+                                : 'Live';
+                              const slStatus = pos.trailing_stop_active ? 'Trailing SL Active' : (pos.breakeven_shifted ? 'Breakeven Locked' : (slShift > 0.1 ? 'SL Shifted Safe' : 'Initial SL'));
+                              return (
+                                <>
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div>
+                                      <div className="flex items-center gap-1.5 flex-wrap">
+                                        <span className="text-base font-extrabold text-white">{pos.symbol}</span>
+                                        <span
+                                          className="text-[10px] font-bold px-1.5 py-0.5 rounded"
+                                          style={{
+                                            backgroundColor: isLong ? 'rgba(0,230,118,0.14)' : 'rgba(255,59,92,0.14)',
+                                            color: isLong ? '#00E676' : '#FF3B5C',
+                                          }}
+                                        >
+                                          {pos.direction} ×{pos.quantity}
+                                        </span>
+                                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300">
+                                          {effLev > 1 ? `${effLev}x MIS` : '1x Cash'}
+                                        </span>
+                                        <span
+                                          className="text-[10px] font-bold px-1.5 py-0.5 rounded"
+                                          style={{
+                                            backgroundColor: pos.breakeven_shifted || pos.trailing_stop_active ? 'rgba(0,230,118,0.14)' : 'rgba(245,158,11,0.14)',
+                                            color: pos.breakeven_shifted || pos.trailing_stop_active ? '#00E676' : '#FBBF24',
+                                          }}
+                                        >
+                                          {slStatus}
+                                        </span>
+                                      </div>
+                                      <div className="text-[11px] text-slate-400 mt-1 flex items-center gap-2 flex-wrap">
+                                        <span>Entry: <strong className="text-slate-200 font-mono">{entryClock}</strong></span>
+                                        <span>•</span>
+                                        <span>চলছে: <strong className="text-sky-300 font-mono">{eH}h {eM}m {eS}s</strong></span>
+                                      </div>
+                                    </div>
+                                    <div className="text-right">
+                                      <div
+                                        className="text-lg font-extrabold font-mono"
+                                        style={{ color: up ? '#00E676' : '#FF3B5C' }}
+                                      >
+                                        {up ? '+' : ''}
+                                        {fmtINR(net)}
+                                      </div>
+                                      <div className="text-[10px] font-mono" style={{ color: up ? '#6EE7B7' : '#FDA4AF' }}>
+                                        {roiMargin >= 0 ? '+' : ''}{roiMargin.toFixed(1)}% Margin • {liveR >= 0 ? '+' : ''}{liveR.toFixed(2)}R
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div
+                                    className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3 pt-3 border-t text-left"
+                                    style={{ borderColor: '#1E293B' }}
                                   >
-                                    {pos.direction} ×{pos.quantity}
-                                  </span>
-                                </div>
-                                <div className="text-[11px] text-slate-400 mt-0.5">{pos.engine_code || pos.trading_mode}</div>
-                              </div>
-                              <div className="text-right">
-                                <div
-                                  className="text-base font-extrabold font-mono"
-                                  style={{ color: up ? '#00E676' : '#FF3B5C' }}
-                                >
-                                  {up ? '+' : ''}
-                                  {fmtINR(net)}
-                                </div>
-                                <div className="text-[10px] text-slate-500">Live Net P&L</div>
-                              </div>
-                            </div>
+                                    <div className="p-2 rounded-lg" style={{ backgroundColor: '#0A0E17' }}>
+                                      <div className="text-[10px] text-slate-500">Entry / Live LTP</div>
+                                      <div className="text-xs font-bold text-slate-300 font-mono">₹{fmtNum(entryP)}</div>
+                                      <div className="text-xs font-extrabold text-sky-300 font-mono">₹{fmtNum(ltpP)}</div>
+                                    </div>
+                                    <div className="p-2 rounded-lg" style={{ backgroundColor: '#0A0E17' }}>
+                                      <div className="text-[10px] text-slate-500">Orig SL → বর্তমান SL</div>
+                                      <div className="text-[11px] text-slate-500 line-through font-mono">₹{fmtNum(origSlP)}</div>
+                                      <div className="text-xs font-bold font-mono" style={{ color: '#FBBF24' }}>₹{fmtNum(slP)}</div>
+                                    </div>
+                                    <div className="p-2 rounded-lg" style={{ backgroundColor: '#0A0E17' }}>
+                                      <div className="text-[10px] text-slate-500">Target / বাকি</div>
+                                      <div className="text-xs font-bold font-mono" style={{ color: '#00E676' }}>₹{fmtNum(tpP)}</div>
+                                      <div className="text-[11px] text-slate-300 font-mono">{ptsToTp <= 0.1 ? 'HIT!' : `${ptsToTp.toFixed(1)} pts`}</div>
+                                    </div>
+                                    <div className="p-2 rounded-lg" style={{ backgroundColor: '#0A0E17' }}>
+                                      <div className="text-[10px] text-slate-500">ইনভেস্টমেন্ট / পজিশন</div>
+                                      <div className="text-xs font-bold text-white font-mono">₹{Math.round(marginUsed).toLocaleString('en-IN')}</div>
+                                      <div className="text-[11px] text-slate-400 font-mono">₹{Math.round(posVal).toLocaleString('en-IN')}</div>
+                                    </div>
+                                  </div>
 
-                            <div
-                              className="mt-2.5 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-semibold"
-                              style={{ backgroundColor: '#151C2C', borderColor: '#24324A', color: '#00D4FF' }}
-                            >
-                              <span>⏱</span>
-                              <span>{holdLabel}</span>
-                            </div>
+                                  {/* Point-by-Point Movement + SL->Target Progress Bar */}
+                                  <div className="mt-2.5 p-2.5 rounded-xl border space-y-1.5" style={{ backgroundColor: '#0A0E17', borderColor: '#1E293B' }}>
+                                    <div className="flex flex-wrap justify-between gap-1 text-[10px] font-mono">
+                                      <span className="text-slate-300">
+                                        মুভ: <strong style={{ color: ptsMoved >= 0 ? '#00E676' : '#FF3B5C' }}>{ptsMoved >= 0 ? '+' : ''}{ptsMoved.toFixed(2)} pts ({pctMoved >= 0 ? '+' : ''}{pctMoved.toFixed(2)}%)</strong>
+                                      </span>
+                                      <span className="text-slate-300">SL দূরত্ব: <strong className="text-amber-300">{ptsFromSl.toFixed(1)} pts</strong></span>
+                                      <span className="text-slate-300">SL শিফট: <strong className="text-emerald-300">{slShift >= 0 ? '+' : ''}{slShift.toFixed(1)} pts</strong></span>
+                                    </div>
+                                    <div className="h-2 w-full rounded-full overflow-hidden bg-slate-800">
+                                      <div
+                                        className="h-full rounded-full transition-all duration-300"
+                                        style={{
+                                          width: `${tpProg}%`,
+                                          background: 'linear-gradient(90deg, #00D4FF 0%, #00E676 100%)',
+                                        }}
+                                      />
+                                    </div>
+                                  </div>
 
-                            <div
-                              className="grid grid-cols-4 gap-2 mt-3 pt-3 border-t text-center"
-                              style={{ borderColor: '#1E293B' }}
-                            >
-                              <div>
-                                <div className="text-[10px] text-slate-500">Entry</div>
-                                <div className="text-xs font-bold text-slate-200 font-mono">₹{fmtNum(pos.entry_fill_price)}</div>
-                              </div>
-                              <div>
-                                <div className="text-[10px] text-slate-500">Live LTP</div>
-                                <div className="text-xs font-bold text-white font-mono">
-                                  ₹{fmtNum(pos.current_ltp ?? pos.live_ltp ?? pos.entry_fill_price)}
-                                </div>
-                              </div>
-                              <div>
-                                <div className="text-[10px] text-slate-500">Stop Loss</div>
-                                <div className="text-xs font-bold font-mono" style={{ color: '#FF3B5C' }}>
-                                  ₹{fmtNum(pos.stop_loss)}
-                                </div>
-                              </div>
-                              <div>
-                                <div className="text-[10px] text-slate-500">Target</div>
-                                <div className="text-xs font-bold font-mono" style={{ color: '#00E676' }}>
-                                  ₹{fmtNum(pos.target_price)}
-                                </div>
-                              </div>
-                            </div>
+                                  {/* In-Card Live Market Reason */}
+                                  <div className="mt-2.5 p-2.5 rounded-xl border text-[11px] text-slate-300 leading-relaxed" style={{ backgroundColor: 'rgba(0,212,255,0.06)', borderColor: 'rgba(0,212,255,0.18)' }}>
+                                    <span className="font-bold text-sky-300">{holdLabel} • </span>
+                                    <span>{pos.rationale || `${pos.engine_code} live signal active (${ptsMoved >= 0 ? 'Moving in favour' : 'Pulling back'}).`}</span>
+                                  </div>
+                                </>
+                              );
+                            })()}
 
                             <div className="mt-3 flex items-center gap-2">
                               <button
@@ -1290,6 +1365,35 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
                 </div>
               </div>
 
+              {/* Custom Intraday MIS Leverage Selector (1x - 5x) */}
+              <div className="mt-4 p-3 rounded-xl border" style={{ backgroundColor: '#0A0E17', borderColor: '#24324A' }}>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-bold text-sky-300">Intraday Leverage (MIS 1x – 5x)</div>
+                    <div className="text-[11px] text-slate-400">
+                      Intraday Buying Power: <strong className="font-mono text-emerald-400">₹{((Number(cfgPerTrade) || 0) * (Number(cfgLeverage) || 1)).toLocaleString('en-IN')}</strong> / trade (Swing/Positional stays 1x)
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {['1', '2', '3', '4', '5'].map((lv) => (
+                      <button
+                        key={lv}
+                        type="button"
+                        onClick={() => setCfgLeverage(lv)}
+                        className="px-3 py-1.5 rounded-lg text-xs font-extrabold border transition"
+                        style={{
+                          backgroundColor: cfgLeverage === lv ? '#00E676' : '#151C2C',
+                          color: cfgLeverage === lv ? '#04120B' : '#CBD5E1',
+                          borderColor: cfgLeverage === lv ? '#00E676' : '#263449',
+                        }}
+                      >
+                        {lv}x
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
               <div className="flex flex-wrap gap-3 mt-4 text-xs">
                 {[
                   { label: 'Auto-Trader Enabled', val: cfgEnabled, set: setCfgEnabled },
@@ -1401,7 +1505,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
                       ),
                     )}
                   </select>
-                  {['5m', '15m', '1h', '1d'].map((tf) => (
+                  {['1m', '5m', '15m', '30m', '1h', '2h', '3h', '4h', '1d', '1M'].map((tf) => (
                     <button
                       key={tf}
                       onClick={() => setChartTf(tf)}
@@ -1419,12 +1523,33 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
                 {chartLoading && <span className="text-xs text-slate-400">Loading live chart...</span>}
               </div>
 
-              <TechnicalChartCanvas
-                symbol={chartSymbol}
-                timeframe={chartTf}
-                candles={candles}
-                indicators={indicators || undefined}
-              />
+              {(() => {
+                const activePos = openPositions.find((p: any) => String(p.symbol).toUpperCase() === String(chartSymbol).toUpperCase());
+                return (
+                  <TechnicalChartCanvas
+                    symbol={chartSymbol}
+                    timeframe={chartTf}
+                    candles={candles}
+                    indicators={indicators || undefined}
+                    planLevels={
+                      activePos
+                        ? {
+                            entry: String(activePos.entry_fill_price || ''),
+                            stop: String(activePos.stop_loss || ''),
+                            initialStop: String(activePos.initial_stop_loss || activePos.stop_loss || ''),
+                            target: String(activePos.target_price || ''),
+                            direction: String(activePos.direction || ''),
+                          }
+                        : undefined
+                    }
+                    depthPressure={{
+                      buyQty: Number(depthData?.depth?.total_buy_qty || depthData?.imbalance?.total_buy_qty || 0),
+                      sellQty: Number(depthData?.depth?.total_sell_qty || depthData?.imbalance?.total_sell_qty || 0),
+                      pressure: String(depthData?.imbalance?.pressure || depthData?.pressure || ''),
+                    }}
+                  />
+                );
+              })()}
             </div>
 
             {/* 5-Level Order Book Depth */}
