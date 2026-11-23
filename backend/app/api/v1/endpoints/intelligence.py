@@ -805,6 +805,7 @@ class AutoTraderConfigUpdate(BaseModel):
     per_trade_amount_inr: Optional[float] = None
     max_open_positions: Optional[int] = None
     daily_loss_limit_pct: Optional[float] = None
+    intraday_leverage: Optional[float] = None
     max_consecutive_losses: Optional[int] = None
     enable_engine_1_orb: Optional[bool] = None
     enable_engine_2a_vcp: Optional[bool] = None
