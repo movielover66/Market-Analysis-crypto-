@@ -95,10 +95,32 @@ function drawArrowHead(
   ctx.fill();
 }
 
+function drawPillTag(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  text: string,
+  bg: string,
+  fg: string,
+) {
+  ctx.font = '700 10px Inter, system-ui, sans-serif';
+  const tw = ctx.measureText(text).width;
+  const pw = tw + 12;
+  const ph = 18;
+  ctx.fillStyle = bg;
+  ctx.beginPath();
+  ctx.roundRect(x, y - ph / 2, pw, ph, 5);
+  ctx.fill();
+  ctx.fillStyle = fg;
+  ctx.fillText(text, x + 6, y + 3.5);
+}
+
 /**
- * TRADEIQ NSE Pro — Tall Live TradingView Lightweight Chart + Synchronized AI Trading Sir Overlay.
- * Supports 1m..1M timeframes, live countdown timer, and animated Step 1->5 mentor drawings
- * locked to real Lightweight Charts price/time coordinates.
+ * TRADEIQ NSE Pro — Smooth Pinch-Zoom/Pan Live Lightweight Chart + Exact Trade-Plan Mentor Overlay.
+ * Fixes:
+ * - Zero chart recreation on parent 1s timer ticks (uses primitive plan strings & candle signature).
+ * - Full mobile pinch-zoom, drag-pan + explicit +, -, Fit, and Full Plan Scale toggle.
+ * - Autoscales cleanly to include ENTRY, SL, and TARGET so trade zones & wave path are always visible.
  */
 export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
   symbol,
@@ -112,9 +134,19 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
   const overlayRef = useRef<HTMLCanvasElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
-  const pointsRef = useRef<Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number; volume: number }>>([]);
+  const pointsRef = useRef<
+    Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number; volume: number }>
+  >([]);
+
+  // Extract primitive strings so parent re-renders never destroy/reset zoom!
+  const entryStr = planLevels?.entry || '';
+  const stopStr = planLevels?.stop || '';
+  const initStopStr = planLevels?.initialStop || stopStr;
+  const targetStr = planLevels?.target || '';
+  const dirStr = (planLevels?.direction || '').toUpperCase();
 
   const [mentorEnabled, setMentorEnabled] = useState(true);
+  const [fitPlanScale, setFitPlanScale] = useState(true);
   const [step, setStep] = useState<number>(4);
   const [allLayers, setAllLayers] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -126,6 +158,28 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
     close: number;
     volume: number;
   } | null>(null);
+
+  // Keep latest state in a ref for the 60fps overlay loop without re-creating chart
+  const overlayStateRef = useRef({
+    mentorEnabled,
+    step,
+    allLayers,
+    entryStr,
+    stopStr,
+    initStopStr,
+    targetStr,
+    dirStr,
+  });
+  overlayStateRef.current = {
+    mentorEnabled,
+    step,
+    allLayers,
+    entryStr,
+    stopStr,
+    initStopStr,
+    targetStr,
+    dirStr,
+  };
 
   const latest = candles && candles.length > 0 ? candles[candles.length - 1] : null;
   const activeHud =
@@ -139,6 +193,14 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
           volume: Number(latest.volume || 0),
         }
       : null);
+
+  // Candle dataset signature so chart only rebuilds when symbol, timeframe, or actual candles change
+  const candleSig = useMemo(() => {
+    if (!candles || candles.length === 0) return 'empty';
+    const first = candles[0];
+    const last = candles[candles.length - 1];
+    return `${symbol}:${timeframe}:${candles.length}:${first.start_ts_ist}:${last.start_ts_ist}:${last.close}:${last.high}:${last.low}`;
+  }, [symbol, timeframe, candles]);
 
   // Live candle close countdown timer
   useEffect(() => {
@@ -172,24 +234,40 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
     return () => window.clearInterval(id);
   }, [playing]);
 
-  // Derive real-data trend & Sir's Bengali explanation
+  // Zoom / Fit button helpers
+  const handleZoom = (factor: number) => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const range = chart.timeScale().getVisibleLogicalRange();
+    if (!range) return;
+    const center = (range.from + range.to) / 2;
+    const halfSpan = Math.max(4, ((range.to - range.from) / 2) * factor);
+    chart.timeScale().setVisibleLogicalRange({
+      from: center - halfSpan,
+      to: center + halfSpan,
+    });
+  };
+
+  const handleResetView = () => {
+    chartRef.current?.timeScale().fitContent();
+  };
+
+  // Derive real-data Bengali Sir's Lesson
   const mentorSummary = useMemo(() => {
     if (!candles || candles.length < 3) {
       return {
-        isShort: false,
         title: `স্যারের ক্লাস — ${symbol} (${timeframe})`,
-        text: 'লাইভ ক্যান্ডেল লোড হচ্ছে — ক্যান্ডেল এলেই ট্রেন্ডলাইন, জোন ও রিস্ক-রিওয়ার্ড ড্রয়িং দেখাবে।',
+        text: 'লাইভ ক্যান্ডেল লোড হচ্ছে — ক্যান্ডেল এলেই এন্ট্রি, SL ও টার্গেট প্ল্যান চার্টে দেখাবে।',
       };
     }
     const firstClose = Number(candles[Math.max(0, candles.length - 15)].close);
     const lastClose = Number(candles[candles.length - 1].close);
-    const dir = (planLevels?.direction || '').toUpperCase();
-    const isShort = dir === 'SHORT' || (!dir && lastClose < firstClose);
+    const isShort = dirStr === 'SHORT' || (!dirStr && lastClose < firstClose);
     const vwap = Number(indicators?.vwap_session || indicators?.vwap || 0);
     const rsi = Number(indicators?.rsi_14 || 50);
-    const entryP = Number(planLevels?.entry || lastClose);
-    const slP = Number(planLevels?.stop || (isShort ? entryP * 1.015 : entryP * 0.985));
-    const tpP = Number(planLevels?.target || (isShort ? entryP * 0.97 : entryP * 1.03));
+    const entryP = Number(entryStr || lastClose);
+    const slP = Number(stopStr || (isShort ? entryP * 1.015 : entryP * 0.985));
+    const tpP = Number(targetStr || (isShort ? entryP * 0.97 : entryP * 1.03));
     const buyQ = depthPressure?.buyQty || 0;
     const sellQ = depthPressure?.sellQty || 0;
     const totalQ = Math.max(1, buyQ + sellQ);
@@ -198,68 +276,82 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
 
     const map: Record<number, { title: string; text: string }> = {
       1: {
-        title: `Step 1: লম্বা ট্রেন্ডলাইন ও প্রাইস স্ট্রাকচার (${symbol} • ${timeframe})`,
+        title: `Step 1: লম্বা ট্রেন্ডলাইন ও স্ট্রাকচার (${symbol} • ${timeframe})`,
         text: isShort
-          ? `চার্টে ওপর থেকে নিচে টানা কমলা ট্রেন্ডলাইন দেখুন — ${symbol} এখন নিম্নমুখী চাপে আছে${vwap > 0 ? ` (VWAP ₹${vwap.toFixed(2)})` : ''}। বড় প্লেয়াররা ওপর থেকে সেল করছে।`
-          : `চার্টে নিচ থেকে ওপরে টানা সবুজ ট্রেন্ডলাইন দেখুন — ${symbol} এখন ঊর্ধ্বমুখী ট্রেন্ডে আছে${vwap > 0 ? ` (VWAP ₹${vwap.toFixed(2)})` : ''}। বায়াররা দাম ধরে রাখছে।`,
+          ? `ওপর থেকে নিচে টানা কমলা ট্রেন্ডলাইন দেখুন — ${symbol} নিম্নমুখী চাপে রয়েছে${vwap > 0 ? ` (VWAP ₹${vwap.toFixed(2)})` : ''}।`
+          : `নিচ থেকে ওপরে টানা সবুজ ট্রেন্ডলাইন দেখুন — ${symbol} ঊর্ধ্বমুখী প্ল্যানে আছে${vwap > 0 ? ` (VWAP ₹${vwap.toFixed(2)})` : ''}।`,
       },
       2: {
-        title: `Step 2: সাপোর্ট / রেজিস্ট্যান্স ও কনসোলিডেশন জোন`,
-        text: `হলুদ শেডেড বক্সটি হলো গুরুত্বপূর্ণ রেঞ্জ জোন। দাম এই জোন ভাঙলে বা রিট্রেস্ট করলেই আসল মোমেন্টাম শুরু হয় — বক্সের ভেতরে অন্ধভাবে এন্ট্রি নেওয়া ঠিক নয়।`,
+        title: `Step 2: মূল সাপোর্ট / রেজিস্ট্যান্স ও জোন`,
+        text: `হলুদ ড্যাশড জোনটি হলো নিকটবর্তী ব্রেকআউট রেঞ্জ। দাম এই জোন ধরে রাখলে বা ভাঙলে আসল মুভ শুরু হয়।`,
       },
       3: {
-        title: `Step 3: ভলিউম স্পাইক ও 5-Level অর্ডার-বুক প্রেশার`,
-        text: `হলুদ গ্লোয়িং রিং দিয়ে সবচেয়ে বড় ভলিউম ক্যান্ডেলটা চিহ্নিত করা হয়েছে। বর্তমান 5-Level ডেপথ অনুযায়ী Buy ${buyPct}% বনাম Sell ${sellPct}% (RSI: ${rsi.toFixed(1)})।`,
+        title: `Step 3: ভলিউম সিগন্যাল ও 5-Level অর্ডার-বুক`,
+        text: `হলুদ রিং দিয়ে সর্বোচ্চ ভলিউম ক্যান্ডেল চিহ্নিত করা হয়েছে। বর্তমান 5-Level ডেপথ: Buy ${buyPct}% বনাম Sell ${sellPct}% (RSI ${rsi.toFixed(1)})।`,
       },
       4: {
-        title: `Step 4: জিগজ্যাগ ওয়েভ প্রজেকশন ও Risk/Reward বক্স`,
-        text: `এন্ট্রি ₹${entryP.toFixed(2)} ধরে লাল বক্সে রিস্ক (SL ₹${slP.toFixed(2)}) এবং সবুজ বক্সে টার্গেট (₹${tpP.toFixed(2)}) আঁকা হয়েছে। অ্যানিমেটেড নীল জিগজ্যাগ তীর দেখাচ্ছে দাম ধাপে ধাপে কীভাবে টার্গেটের দিকে যেতে পারে।`,
+        title: `Step 4: আসল ট্রেড প্ল্যান — Entry, SL, Target ও ওয়েভ পথ`,
+        text: `নীল লাইন Entry (₹${entryP.toFixed(2)}), লাল বক্স Risk/SL (₹${slP.toFixed(2)}), আর সবুজ বক্স Target (₹${tpP.toFixed(2)})। অ্যানিমেটেড নীল জিগজ্যাগ তীর দেখাচ্ছে দাম কীভাবে টার্গেটে পৌঁছাবে।`,
       },
       5: {
-        title: `Step 5: SL সুরক্ষা ও লাইভ এক্সিট প্ল্যান`,
-        text: `কমলা ড্যাশড লাইন হলো বর্তমান অ্যাক্টিভ SL (₹${slP.toFixed(2)})। ট্রেড ১.৫R লাভে গেলেই SL ব্রেকইভেনে লক হয়ে রিস্ক শূন্য করে দেয়, আর ডানপাশের গ্লোয়িং ডট লাইভ LTP দেখাচ্ছে।`,
+        title: `Step 5: SL সুরক্ষা ও লাইভ LTP ট্র্যাকিং`,
+        text: `কমলা লাইনে বর্তমান SL (₹${slP.toFixed(2)}) সেট আছে। ১.৫R লাভে গেলে SL ব্রেকইভেনে শিফট হয়ে রিস্ক শূন্য করে দেবে।`,
       },
     };
-
     const chosen = map[step] || map[4];
     return {
-      isShort,
-      title: allLayers ? `স্যারের সম্পূর্ণ ড্রয়িং — ${symbol} (${timeframe} • সব লেয়ার)` : chosen.title,
+      title: allLayers ? `সম্পূর্ণ ট্রেড প্ল্যান — ${symbol} (${timeframe})` : chosen.title,
       text: chosen.text,
     };
-  }, [candles, indicators, planLevels, depthPressure, step, allLayers, symbol, timeframe]);
+  }, [candles, indicators, entryStr, stopStr, targetStr, dirStr, depthPressure, step, allLayers, symbol, timeframe]);
 
-  // Mount Lightweight Charts
+  // Mount Lightweight Charts ONLY when candleSig, plan primitives, or fitPlanScale changes
   useEffect(() => {
     const el = containerRef.current;
     if (!el || !candles || candles.length === 0) return;
 
+    const entryNum = Number(entryStr);
+    const stopNum = Number(stopStr);
+    const targetNum = Number(targetStr);
+    const hasPlan = Number.isFinite(entryNum) && entryNum > 0 && Number.isFinite(stopNum) && stopNum > 0 && Number.isFinite(targetNum) && targetNum > 0;
+
     const chart = createChart(el, {
       width: el.clientWidth || 720,
-      height: 520,
+      height: 500,
       layout: {
         background: { type: ColorType.Solid, color: '#040812' },
         textColor: '#94a3b8',
         fontFamily: 'Inter, system-ui, sans-serif',
       },
       grid: {
-        vertLines: { color: 'rgba(30, 41, 59, 0.45)' },
-        horzLines: { color: 'rgba(30, 41, 59, 0.45)' },
+        vertLines: { color: 'rgba(30, 41, 59, 0.42)' },
+        horzLines: { color: 'rgba(30, 41, 59, 0.42)' },
       },
       crosshair: {
         mode: CrosshairMode.Normal,
         vertLine: { color: '#38bdf8', width: 1, style: 2, labelBackgroundColor: '#0f172a' },
         horzLine: { color: '#38bdf8', width: 1, style: 2, labelBackgroundColor: '#0f172a' },
       },
+      handleScroll: {
+        mouseWheel: true,
+        pressedMouseMove: true,
+        horzTouchDrag: true,
+        vertTouchDrag: false,
+      },
+      handleScale: {
+        axisPressedMouseMove: { time: true, price: true },
+        mouseWheel: true,
+        pinch: true,
+      },
       rightPriceScale: {
         borderColor: '#1e293b',
-        scaleMargins: { top: 0.1, bottom: 0.22 },
+        scaleMargins: { top: 0.1, bottom: 0.2 },
       },
       timeScale: {
         borderColor: '#1e293b',
         timeVisible: true,
         secondsVisible: false,
-        rightOffset: 8,
+        rightOffset: 10,
       },
     });
 
@@ -269,6 +361,21 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
       borderVisible: false,
       wickUpColor: '#10b981',
       wickDownColor: '#f43f5e',
+      autoscaleInfoProvider: hasPlan && fitPlanScale
+        ? (original: () => { priceRange: { minValue: number; maxValue: number } } | null) => {
+            const res = original();
+            if (!res || !res.priceRange) return res;
+            const minV = Math.min(res.priceRange.minValue, entryNum, stopNum, targetNum);
+            const maxV = Math.max(res.priceRange.maxValue, entryNum, stopNum, targetNum);
+            const pad = (maxV - minV) * 0.04;
+            return {
+              priceRange: {
+                minValue: minV - pad,
+                maxValue: maxV + pad,
+              },
+            };
+          }
+        : undefined,
     });
 
     const volumeSeries = chart.addHistogramSeries({
@@ -276,14 +383,21 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
       priceScaleId: '',
     });
     volumeSeries.priceScale().applyOptions({
-      scaleMargins: { top: 0.82, bottom: 0 },
+      scaleMargins: { top: 0.84, bottom: 0 },
     });
 
     const seen = new Set<number>();
     const candlePoints: CandlestickData[] = [];
     const volPoints: HistogramData[] = [];
     const volByTime = new Map<number, number>();
-    const parsedPts: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number; volume: number }> = [];
+    const parsedPts: Array<{
+      time: UTCTimestamp;
+      open: number;
+      high: number;
+      low: number;
+      close: number;
+      volume: number;
+    }> = [];
 
     const sorted = [...candles]
       .map((c, idx) => ({ c, t: toUtcTimestamp(c.start_ts_ist, idx) }))
@@ -304,7 +418,7 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
       volPoints.push({
         time: ut,
         value: v,
-        color: cl >= o ? 'rgba(16, 185, 129, 0.35)' : 'rgba(244, 63, 94, 0.35)',
+        color: cl >= o ? 'rgba(16, 185, 129, 0.34)' : 'rgba(244, 63, 94, 0.34)',
       });
       volByTime.set(ts, v);
       parsedPts.push({ time: ut, open: o, high: h, low: l, close: cl, volume: v });
@@ -316,12 +430,11 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
     chartRef.current = chart;
     seriesRef.current = candleSeries;
 
-    // Clean trade plan lines only (keeps right price axis uncluttered!)
-    const addLine = (valStr: string | undefined, title: string, color: string, lineStyle = 0) => {
-      const p = Number(valStr);
-      if (valStr && Number.isFinite(p) && p > 0) {
+    // Clean trade plan price lines on right axis
+    const addLine = (val: number, title: string, color: string, lineStyle = 0) => {
+      if (Number.isFinite(val) && val > 0) {
         candleSeries.createPriceLine({
-          price: p,
+          price: val,
           color,
           lineWidth: 1,
           lineStyle,
@@ -330,9 +443,11 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
         });
       }
     };
-    addLine(planLevels?.entry, 'ENTRY', '#38bdf8', 0);
-    addLine(planLevels?.stop, 'SL', '#f59e0b', 2);
-    addLine(planLevels?.target, 'TARGET', '#10b981', 2);
+    if (hasPlan) {
+      addLine(entryNum, 'ENTRY', '#38bdf8', 0);
+      addLine(stopNum, 'SL', '#f43f5e', 2);
+      addLine(targetNum, 'TARGET', '#10b981', 2);
+    }
 
     chart.timeScale().fitContent();
 
@@ -368,9 +483,9 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
       seriesRef.current = null;
       chart.remove();
     };
-  }, [candles, planLevels]);
+  }, [candleSig, entryStr, stopStr, targetStr, fitPlanScale]);
 
-  // Synchronized 60fps Animated Mentor Overlay locked to Lightweight Charts coordinates
+  // Synchronized 60fps Animated Mentor Overlay (reads refs, never recreates chart!)
   useEffect(() => {
     let rafId = 0;
     let phase = 0;
@@ -381,6 +496,7 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
       const chart = chartRef.current;
       const series = seriesRef.current;
       const pts = pointsRef.current;
+      const st = overlayStateRef.current;
 
       if (canvas && chart && series && pts.length >= 4) {
         const rect = canvas.getBoundingClientRect();
@@ -398,18 +514,19 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
             ctx.clearRect(0, 0, rect.width, rect.height);
 
             const W = rect.width;
-            const plotRight = W - 64;
+            const H = rect.height;
+            const plotRight = W - 66;
+            const plotBottom = H - 28;
             const tsApi = chart.timeScale();
-            const show = (s: number) => mentorEnabled && (allLayers || step >= s);
+            const show = (s: number) => st.mentorEnabled && (st.allLayers || st.step >= s);
 
             const n = pts.length;
             const last = pts[n - 1];
             const firstIdx = Math.max(0, n - 24);
             const windowPts = pts.slice(firstIdx);
-            const dir = (planLevels?.direction || '').toUpperCase();
-            const isShort = dir === 'SHORT' || (!dir && last.close < windowPts[0].close);
+            const isShort = st.dirStr === 'SHORT' || (!st.dirStr && last.close < windowPts[0].close);
 
-            // Find breakout / highest volume bar in recent window
+            // Highest volume candle in recent window
             let volIdx = n - 1;
             let maxVol = -1;
             for (let i = Math.max(0, n - 18); i < n; i++) {
@@ -419,8 +536,8 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
               }
             }
 
-            // STEP 2: Shaded ORB / Range Zone
-            if (show(2)) {
+            // STEP 2: Key Structure / Consolidation Zone (only if step 2 or allLayers)
+            if (show(2) && (st.step === 2 || st.allLayers)) {
               const zoneSlice = windowPts.slice(0, Math.max(3, Math.floor(windowPts.length * 0.45)));
               const zHi = Math.max(...zoneSlice.map((p) => p.high));
               const zLo = Math.min(...zoneSlice.map((p) => p.low));
@@ -428,74 +545,83 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
               const yB = series.priceToCoordinate(zLo);
               const xStart = tsApi.timeToCoordinate(zoneSlice[0].time) ?? 10;
               if (yT !== null && yB !== null) {
-                const top = Math.min(yT, yB);
-                const h = Math.max(6, Math.abs(yB - yT));
-                ctx.fillStyle = step === 2 ? 'rgba(251, 191, 36, 0.14)' : 'rgba(251, 191, 36, 0.06)';
-                ctx.fillRect(Math.max(0, xStart), top, Math.max(20, plotRight - Math.max(0, xStart)), h);
-                ctx.strokeStyle = 'rgba(251, 191, 36, 0.6)';
+                const top = Math.max(6, Math.min(yT, yB));
+                const bot = Math.min(plotBottom, Math.max(yT, yB));
+                const h = Math.max(6, bot - top);
+                const left = Math.max(6, xStart);
+                ctx.fillStyle = 'rgba(251, 191, 36, 0.08)';
+                ctx.fillRect(left, top, Math.max(20, plotRight - left), h);
+                ctx.strokeStyle = 'rgba(251, 191, 36, 0.55)';
                 ctx.setLineDash([5, 5]);
-                ctx.strokeRect(Math.max(0, xStart), top, Math.max(20, plotRight - Math.max(0, xStart)), h);
+                ctx.strokeRect(left, top, Math.max(20, plotRight - left), h);
                 ctx.setLineDash([]);
-                ctx.fillStyle = '#fcd34d';
-                ctx.font = '700 10px Inter, sans-serif';
-                ctx.fillText('KEY STRUCTURE / ORB ZONE', Math.max(8, xStart + 8), top + 13);
+                drawPillTag(ctx, left + 6, top + 12, 'STRUCTURE / ORB ZONE', 'rgba(251,191,36,0.22)', '#fde68a');
               }
             }
 
-            // STEP 4: Risk/Reward Shaded Box + Animated Multi-Leg Zigzag Wave Path
+            // STEP 4: EXACT TRADE PLAN — ENTRY, SL (Red Box), TARGET (Green Box) + Wave Path
             if (show(4)) {
-              const entryVal = Number(planLevels?.entry || last.close);
-              const origSlVal = Number(planLevels?.initialStop || planLevels?.stop || (isShort ? entryVal * 1.015 : entryVal * 0.985));
-              const tpVal = Number(planLevels?.target || (isShort ? entryVal * 0.97 : entryVal * 1.03));
-              const yEnt = series.priceToCoordinate(entryVal);
-              const ySl = series.priceToCoordinate(origSlVal);
-              const yTp = series.priceToCoordinate(tpVal);
-              const anchorX = tsApi.timeToCoordinate(pts[Math.max(0, volIdx)].time) ?? (plotRight * 0.55);
-              const x1 = Math.max(12, Math.min(plotRight - 80, anchorX));
-              const x2 = plotRight - 6;
+              const entryVal = Number(st.entryStr || last.close);
+              const slVal = Number(st.stopStr || (isShort ? entryVal * 1.015 : entryVal * 0.985));
+              const tpVal = Number(st.targetStr || (isShort ? entryVal * 0.97 : entryVal * 1.03));
 
-              if (yEnt !== null && ySl !== null && yTp !== null) {
-                // Red Risk Zone
-                ctx.fillStyle = 'rgba(244, 63, 94, 0.13)';
-                ctx.fillRect(x1, Math.min(yEnt, ySl), x2 - x1, Math.abs(ySl - yEnt));
-                // Green Profit Zone
-                ctx.fillStyle = 'rgba(16, 185, 129, 0.13)';
-                ctx.fillRect(x1, Math.min(yEnt, yTp), x2 - x1, Math.abs(yTp - yEnt));
+              const rawYEnt = series.priceToCoordinate(entryVal);
+              const rawYSl = series.priceToCoordinate(slVal);
+              const rawYTp = series.priceToCoordinate(tpVal);
+              const rawYLive = series.priceToCoordinate(last.close);
 
-                // Animated Multi-Leg Zigzag Wave Projection Arrow
-                const dx = x2 - x1;
-                const dy = yTp - yEnt;
-                const wPts: Array<[number, number]> = [
-                  [x1, yEnt],
-                  [x1 + dx * 0.24, yEnt + dy * 0.38],
-                  [x1 + dx * 0.38, yEnt + dy * 0.22],
-                  [x1 + dx * 0.68, yEnt + dy * 0.74],
-                  [x1 + dx * 0.80, yEnt + dy * 0.58],
-                  [x2 - 4, yTp],
-                ];
-                ctx.save();
-                ctx.strokeStyle = '#22d3ee';
-                ctx.lineWidth = 2.4;
-                ctx.setLineDash([8, 6]);
-                ctx.lineDashOffset = -phase * 1.25;
-                ctx.beginPath();
-                wPts.forEach(([wx, wy], i) => (i === 0 ? ctx.moveTo(wx, wy) : ctx.lineTo(wx, wy)));
-                ctx.stroke();
-                ctx.setLineDash([]);
-                drawArrowHead(ctx, wPts[4][0], wPts[4][1], wPts[5][0], wPts[5][1], '#22d3ee');
-                ctx.fillStyle = '#67e8f9';
-                ctx.font = '700 10px Inter, sans-serif';
-                ctx.fillText(
-                  isShort ? 'ধাপে ধাপে নামার পথ (Wave Path)' : 'ধাপে ধাপে ওঠার পথ (Wave Path)',
-                  wPts[2][0] - 10,
-                  wPts[2][1] + (isShort ? -8 : 14),
-                );
-                ctx.restore();
+              const clampY = (y: number) => Math.max(12, Math.min(plotBottom - 8, y));
+              const lastX = tsApi.timeToCoordinate(last.time) ?? plotRight * 0.65;
+              const boxLeft = Math.max(12, Math.min(plotRight - 130, lastX - 40));
+              const boxRight = plotRight - 4;
+
+              if (rawYEnt !== null && rawYSl !== null && rawYTp !== null) {
+                const yEnt = clampY(rawYEnt);
+                const ySl = clampY(rawYSl);
+                const yTp = clampY(rawYTp);
+
+                // Red Risk Zone (Entry <-> SL)
+                ctx.fillStyle = 'rgba(244, 63, 94, 0.14)';
+                ctx.fillRect(boxLeft, Math.min(yEnt, ySl), boxRight - boxLeft, Math.max(2, Math.abs(ySl - yEnt)));
+                // Green Profit Zone (Entry <-> Target)
+                ctx.fillStyle = 'rgba(16, 185, 129, 0.14)';
+                ctx.fillRect(boxLeft, Math.min(yEnt, yTp), boxRight - boxLeft, Math.max(2, Math.abs(yTp - yEnt)));
+
+                // Explicit Crisp Pill Tags directly on Chart so Entry/SL/Target are ALWAYS clear!
+                drawPillTag(ctx, boxLeft + 6, yEnt, `ENTRY ₹${entryVal.toFixed(2)}`, 'rgba(14,165,233,0.9)', '#04101d');
+                drawPillTag(ctx, boxLeft + 6, ySl, `SL ₹${slVal.toFixed(2)}`, 'rgba(244,63,94,0.9)', '#ffffff');
+                drawPillTag(ctx, boxLeft + 6, yTp, `TARGET ₹${tpVal.toFixed(2)}`, 'rgba(16,185,129,0.9)', '#04101d');
+
+                // Animated Multi-Leg Zigzag Wave Path from Live Price -> Target
+                const startX = Math.max(boxLeft + 24, Math.min(boxRight - 40, lastX));
+                const startY = rawYLive !== null ? clampY(rawYLive) : yEnt;
+                const dx = boxRight - 8 - startX;
+                const dy = yTp - startY;
+                if (dx > 18 && Math.abs(dy) > 10) {
+                  const wPts: Array<[number, number]> = [
+                    [startX, startY],
+                    [startX + dx * 0.28, startY + dy * 0.42],
+                    [startX + dx * 0.45, startY + dy * 0.26],
+                    [startX + dx * 0.76, startY + dy * 0.78],
+                    [boxRight - 8, yTp],
+                  ];
+                  ctx.save();
+                  ctx.strokeStyle = '#22d3ee';
+                  ctx.lineWidth = 2.4;
+                  ctx.setLineDash([7, 5]);
+                  ctx.lineDashOffset = -phase * 1.2;
+                  ctx.beginPath();
+                  wPts.forEach(([wx, wy], i) => (i === 0 ? ctx.moveTo(wx, wy) : ctx.lineTo(wx, wy)));
+                  ctx.stroke();
+                  ctx.setLineDash([]);
+                  drawArrowHead(ctx, wPts[3][0], wPts[3][1], wPts[4][0], wPts[4][1], '#22d3ee');
+                  ctx.restore();
+                }
               }
             }
 
-            // STEP 1: Long Diagonal Teacher Trendline across Swings
-            if (show(1)) {
+            // STEP 1: Diagonal Trendline (cleanly shown in Step 1 or All Layers)
+            if (show(1) && (st.step === 1 || st.allLayers)) {
               const pStart = windowPts[0];
               const pEnd = windowPts[windowPts.length - 1];
               const xA = tsApi.timeToCoordinate(pStart.time);
@@ -504,24 +630,29 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
               const yB = series.priceToCoordinate(isShort ? pEnd.high : pEnd.low);
               if (xA !== null && xB !== null && yA !== null && yB !== null) {
                 const col = isShort ? '#fb923c' : '#34d399';
-                const extX = Math.min(plotRight - 8, xB + 26);
+                const extX = Math.min(plotRight - 8, xB + 22);
                 const slope = (yB - yA) / Math.max(1, xB - xA);
-                const extY = yB + slope * (extX - xB);
+                const extY = Math.max(14, Math.min(plotBottom - 10, yB + slope * (extX - xB)));
                 ctx.strokeStyle = col;
-                ctx.lineWidth = step === 1 ? 2.6 : 1.9;
+                ctx.lineWidth = 2.4;
                 ctx.beginPath();
                 ctx.moveTo(xA, yA);
                 ctx.lineTo(extX, extY);
                 ctx.stroke();
                 drawArrowHead(ctx, xA, yA, extX, extY, col);
-                ctx.fillStyle = isShort ? '#fdba74' : '#6ee7b7';
-                ctx.font = '700 10px Inter, sans-serif';
-                ctx.fillText(isShort ? 'DOWN-TRENDLINE' : 'UP-TRENDLINE', Math.max(8, xA + 6), yA - 8);
+                drawPillTag(
+                  ctx,
+                  Math.max(8, xA + 6),
+                  Math.max(14, yA - 12),
+                  isShort ? 'DOWN-TRENDLINE' : 'UP-TRENDLINE',
+                  isShort ? 'rgba(251,146,60,0.22)' : 'rgba(52,211,153,0.22)',
+                  isShort ? '#fdba74' : '#6ee7b7',
+                );
               }
             }
 
-            // STEP 3: Volume Surge Candle Halo
-            if (show(3)) {
+            // STEP 3: Volume Surge Candle Halo (only Step 3 or All Layers)
+            if (show(3) && (st.step === 3 || st.allLayers)) {
               const vp = pts[volIdx];
               const vx = tsApi.timeToCoordinate(vp.time);
               const vy = series.priceToCoordinate(vp.close);
@@ -532,16 +663,14 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
                 ctx.beginPath();
                 ctx.arc(vx, vy, r, 0, Math.PI * 2);
                 ctx.stroke();
-                ctx.fillStyle = '#fef08a';
-                ctx.font = '700 10px Inter, sans-serif';
-                ctx.fillText('HIGH VOL SIGNAL', Math.max(8, vx - 36), vy - 18);
+                drawPillTag(ctx, Math.max(8, vx - 42), Math.max(14, vy - 22), 'HIGH VOL SIGNAL', 'rgba(250,204,21,0.22)', '#fef08a');
               }
             }
 
-            // STEP 5 / Always-On Live Glowing Price Tip
+            // Always-on Live Glowing LTP Tip
             const lx = tsApi.timeToCoordinate(last.time);
             const ly = series.priceToCoordinate(last.close);
-            if (lx !== null && ly !== null) {
+            if (lx !== null && ly !== null && lx >= 0 && lx <= plotRight) {
               const glow = 6 + Math.sin(phase * 0.16) * 3;
               ctx.fillStyle = 'rgba(56, 189, 248, 0.25)';
               ctx.beginPath();
@@ -560,13 +689,13 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
 
     rafId = window.requestAnimationFrame(renderOverlay);
     return () => window.cancelAnimationFrame(rafId);
-  }, [mentorEnabled, step, allLayers, planLevels]);
+  }, []);
 
   const vwapVal = indicators?.vwap_session || indicators?.vwap;
 
   return (
     <div className="space-y-3">
-      {/* Pro OHLCV HUD Bar + Live Countdown + Mentor Controls */}
+      {/* Pro OHLCV HUD Bar + Live Countdown */}
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-800 bg-slate-950/90 px-3 py-2.5 text-xs">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
@@ -589,14 +718,14 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
         )}
       </div>
 
-      {/* Mentor Toolbar */}
+      {/* Mentor + Zoom Toolbar (Mobile-Friendly 1-Tap Zoom + Plan Fit!) */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 flex-wrap">
           {[
             { id: 1, label: '1. ট্রেন্ডলাইন' },
             { id: 2, label: '2. জোন' },
             { id: 3, label: '3. ভলিউম' },
-            { id: 4, label: '4. ওয়েভ ও R:R' },
+            { id: 4, label: '4. ট্রেড প্ল্যান (R:R)' },
             { id: 5, label: '5. SL লক' },
           ].map((s) => (
             <button
@@ -619,7 +748,43 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
             </button>
           ))}
         </div>
-        <div className="flex items-center gap-1.5">
+
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <button
+            type="button"
+            onClick={() => handleZoom(0.75)}
+            className="px-2.5 py-1.5 rounded-lg text-xs font-extrabold border border-slate-700 bg-slate-900 text-white"
+            title="Zoom In"
+          >
+            ＋
+          </button>
+          <button
+            type="button"
+            onClick={() => handleZoom(1.35)}
+            className="px-2.5 py-1.5 rounded-lg text-xs font-extrabold border border-slate-700 bg-slate-900 text-white"
+            title="Zoom Out"
+          >
+            －
+          </button>
+          <button
+            type="button"
+            onClick={handleResetView}
+            className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold border border-slate-700 bg-slate-900 text-sky-300"
+          >
+            Fit
+          </button>
+          <button
+            type="button"
+            onClick={() => setFitPlanScale((f) => !f)}
+            className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold border"
+            style={{
+              backgroundColor: fitPlanScale ? 'rgba(16,185,129,0.18)' : '#0B1220',
+              borderColor: fitPlanScale ? '#10B981' : '#1E293B',
+              color: fitPlanScale ? '#6EE7B7' : '#94A3B8',
+            }}
+          >
+            {fitPlanScale ? 'Full Plan: ON' : 'Candles Only'}
+          </button>
           <button
             type="button"
             onClick={() => setPlaying((p) => !p)}
@@ -627,22 +792,6 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
             style={{ backgroundColor: playing ? '#F59E0B' : '#00E676', color: '#04120B' }}
           >
             {playing ? '⏸ পজ' : '▶ স্যারের ক্লাস'}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setPlaying(false);
-              setMentorEnabled(true);
-              setAllLayers((a) => !a);
-            }}
-            className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold border"
-            style={{
-              backgroundColor: allLayers ? 'rgba(16,185,129,0.18)' : '#0B1220',
-              borderColor: allLayers ? '#10B981' : '#1E293B',
-              color: allLayers ? '#6EE7B7' : '#CBD5E1',
-            }}
-          >
-            সব একসাথে
           </button>
           <button
             type="button"
@@ -657,18 +806,18 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
         </div>
       </div>
 
-      {/* TALL 520px TradingView Chart + Synchronized Mentor Overlay */}
+      {/* TALL 500px TradingView Chart + Synchronized Mentor Overlay */}
       <div className="relative rounded-xl border border-slate-800 bg-[#040812] overflow-hidden">
         {candles && candles.length > 0 ? (
           <>
-            <div ref={containerRef} className="w-full h-[520px]" />
+            <div ref={containerRef} className="w-full h-[500px]" style={{ touchAction: 'none' }} />
             <canvas
               ref={overlayRef}
-              className="pointer-events-none absolute inset-0 w-full h-[520px] z-10"
+              className="pointer-events-none absolute inset-0 w-full h-[500px] z-10"
             />
           </>
         ) : (
-          <div className="h-[520px] flex items-center justify-center text-xs text-slate-400">
+          <div className="h-[500px] flex items-center justify-center text-xs text-slate-400">
             Waiting for live Angel One OHLCV candles for {symbol} ({timeframe})...
           </div>
         )}
@@ -678,7 +827,13 @@ export const TechnicalChartCanvas: React.FC<ChartOverlayProps> = ({
       {mentorEnabled && (
         <div
           className="rounded-xl p-3.5 border-l-4 space-y-1"
-          style={{ backgroundColor: '#0A101E', borderColor: '#38BDF8', borderTop: '1px solid #1E293B', borderRight: '1px solid #1E293B', borderBottom: '1px solid #1E293B' }}
+          style={{
+            backgroundColor: '#0A101E',
+            borderColor: '#38BDF8',
+            borderTop: '1px solid #1E293B',
+            borderRight: '1px solid #1E293B',
+            borderBottom: '1px solid #1E293B',
+          }}
         >
           <div className="text-xs font-extrabold text-sky-300">{mentorSummary.title}</div>
           <p className="text-xs text-slate-200 leading-relaxed">{mentorSummary.text}</p>
