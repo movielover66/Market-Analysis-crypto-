@@ -68,6 +68,7 @@ class AutoTraderConfig:
     per_trade_amount_inr: Decimal = Decimal("20000.00")
     max_open_positions: int = 4
     daily_loss_limit_pct: Decimal = Decimal("1.50")
+    intraday_leverage: Decimal = Decimal("1.0")
     max_consecutive_losses: int = 3
     enable_engine_1_orb: bool = True
     enable_engine_2a_vcp: bool = True
@@ -83,6 +84,7 @@ class AutoTraderConfig:
             "per_trade_amount_inr": str(self.per_trade_amount_inr.quantize(Decimal("0.01"))),
             "max_open_positions": self.max_open_positions,
             "daily_loss_limit_pct": str(self.daily_loss_limit_pct.quantize(Decimal("0.01"))),
+            "intraday_leverage": str(self.intraday_leverage.quantize(Decimal("0.1"))),
             "max_consecutive_losses": self.max_consecutive_losses,
             "enable_engine_1_orb": self.enable_engine_1_orb,
             "enable_engine_2a_vcp": self.enable_engine_2a_vcp,
@@ -130,6 +132,8 @@ class AutoPaperTrader:
             c.max_open_positions = max(1, min(15, int(updates["max_open_positions"])))
         if "daily_loss_limit_pct" in updates and updates["daily_loss_limit_pct"] is not None:
             c.daily_loss_limit_pct = max(Decimal("0.25"), min(Decimal("10.00"), Decimal(str(updates["daily_loss_limit_pct"]))))
+        if "intraday_leverage" in updates and updates["intraday_leverage"] is not None:
+            c.intraday_leverage = max(Decimal("1.0"), min(Decimal("5.0"), Decimal(str(updates["intraday_leverage"]))))
         if "max_consecutive_losses" in updates and updates["max_consecutive_losses"] is not None:
             c.max_consecutive_losses = max(1, min(10, int(updates["max_consecutive_losses"])))
         for flag in ("enable_engine_1_orb", "enable_engine_2a_vcp", "enable_engine_2b_rsi2", "enable_news_shield"):
@@ -427,11 +431,17 @@ class AutoPaperTrader:
                     if sent in ("BEARISH", "HIGH_RISK"):
                         blocked_reasons.append(f"{sig.symbol}: Blocked by Gemini News Shield ({sent})")
                         continue
-                # Size strictly from user's configured per_trade_amount_inr & available cash
+                # Size from user's configured per_trade_amount_inr & intraday_leverage (MIS 1x-5x; Swing strictly 1x)
                 alloc = min(self.config.per_trade_amount_inr, available_cash)
-                if sig.entry_price <= 0 or alloc < sig.entry_price:
+                eff_lev = (
+                    min(Decimal("5.0"), max(Decimal("1.0"), self.config.intraday_leverage))
+                    if sig.trading_mode.upper() == "INTRADAY"
+                    else Decimal("1.0")
+                )
+                buying_power = (alloc * eff_lev).quantize(Decimal("0.01"))
+                if sig.entry_price <= 0 or buying_power < sig.entry_price:
                     continue
-                qty = int(alloc // sig.entry_price)
+                qty = int(buying_power // sig.entry_price)
                 if qty < 1:
                     continue
                 pos = simulator.open_paper_position(
@@ -446,8 +456,10 @@ class AutoPaperTrader:
                     now_ist_str=dt_ist.isoformat(),
                     engine_code=sig.engine_code,
                     rationale=sig.rationale,
+                    leverage=eff_lev,
                 )
-                available_cash -= (pos.entry_fill_price * Decimal(str(qty))) + pos.entry_charges_inr
+                margin_used = ((pos.entry_fill_price * Decimal(str(qty))) / eff_lev).quantize(Decimal("0.01"))
+                available_cash -= margin_used + pos.entry_charges_inr
                 open_symbols.add(sig.symbol)
                 open_count += 1
                 hm = get_horizon_meta(pos.engine_code, pos.trading_mode)
