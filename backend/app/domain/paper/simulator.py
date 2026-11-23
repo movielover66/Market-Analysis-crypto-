@@ -63,6 +63,7 @@ class PaperPosition:
     trailing_stop_active: bool = False
     outcome: Optional[str] = None  # "WIN" | "LOSS" | "BREAKEVEN" strictly from net_pnl_inr
     rationale: str = ""
+    leverage: Decimal = Decimal("1.0")
 
 
 def _classify_outcome(net_pnl: Decimal) -> str:
@@ -94,6 +95,7 @@ class PaperTradingSimulator:
         now_ist_str: str = "2026-11-19T09:30:00+05:30",
         engine_code: str = "MANUAL",
         rationale: str = "",
+        leverage: Decimal = Decimal("1.0"),
     ) -> PaperPosition:
         if quantity < 1:
             raise ValueError("Paper position quantity must be >= 1")
@@ -131,6 +133,7 @@ class PaperTradingSimulator:
             engine_code=engine_code.upper(),
             initial_stop_loss=stop_loss,
             rationale=rationale,
+            leverage=max(Decimal("1.0"), leverage),
         )
         self.positions[pid] = pos
         self.orders.append(
@@ -291,8 +294,22 @@ class PaperTradingSimulator:
             unrealised_gross += mtm["unrealised_gross_inr"]
             unrealised_charges += mtm["total_estimated_charges_inr"]
             unrealised_net += mtm["unrealised_net_inr"]
-            deployed_capital += (p.entry_fill_price * Decimal(str(p.quantity))).quantize(Decimal("0.01"))
+            eff_lev = max(Decimal("1.0"), getattr(p, "leverage", Decimal("1.0")) or Decimal("1.0"))
+            pos_val = (p.entry_fill_price * Decimal(str(p.quantity))).quantize(Decimal("0.01"))
+            margin_used = (pos_val / eff_lev).quantize(Decimal("0.01"))
+            deployed_capital += margin_used
             open_entry_charges += p.entry_charges_inr
+            orig_sl = p.initial_stop_loss if p.initial_stop_loss is not None else p.stop_loss
+            is_long = p.direction == "LONG"
+            pts_moved = (mtm["current_ltp"] - p.entry_fill_price) if is_long else (p.entry_fill_price - mtm["current_ltp"])
+            pct_moved = ((pts_moved / p.entry_fill_price) * Decimal("100")).quantize(Decimal("0.02")) if p.entry_fill_price > 0 else Decimal("0.00")
+            pts_to_tp = max(Decimal("0.00"), (p.target_price - mtm["current_ltp"]) if is_long else (mtm["current_ltp"] - p.target_price))
+            pts_from_sl = (mtm["current_ltp"] - p.stop_loss) if is_long else (p.stop_loss - mtm["current_ltp"])
+            sl_shifted_pts = (p.stop_loss - orig_sl) if is_long else (orig_sl - p.stop_loss)
+            tot_tp_pts = abs(p.target_price - p.entry_fill_price)
+            tp_prog = min(Decimal("100.0"), max(Decimal("0.0"), (pts_moved / tot_tp_pts * Decimal("100")).quantize(Decimal("0.1")))) if tot_tp_pts > 0 else Decimal("0.0")
+            init_risk_ps = max(Decimal("0.05"), abs(p.entry_fill_price - orig_sl))
+            live_r = (pts_moved / init_risk_ps).quantize(Decimal("0.02"))
             live_open_rows.append({
                 "position_id": p.position_id,
                 "symbol": p.symbol,
@@ -300,10 +317,21 @@ class PaperTradingSimulator:
                 "trading_mode": p.trading_mode,
                 "direction": p.direction,
                 "quantity": p.quantity,
+                "leverage": str(eff_lev.quantize(Decimal("0.1"))),
+                "position_value_inr": str(pos_val),
+                "margin_used_inr": str(margin_used),
                 "entry_fill_price": str(p.entry_fill_price),
                 "current_ltp": str(mtm["current_ltp"]),
+                "initial_stop_loss": str(orig_sl),
                 "stop_loss": str(p.stop_loss),
                 "target_price": str(p.target_price),
+                "points_moved": str(pts_moved.quantize(Decimal("0.05"))),
+                "pct_moved": str(pct_moved),
+                "points_to_target": str(pts_to_tp.quantize(Decimal("0.05"))),
+                "points_from_sl": str(pts_from_sl.quantize(Decimal("0.05"))),
+                "sl_shifted_pts": str(sl_shifted_pts.quantize(Decimal("0.05"))),
+                "target_progress_pct": str(tp_prog),
+                "live_r_multiple": str(live_r),
                 "breakeven_shifted": p.breakeven_shifted,
                 "trailing_stop_active": p.trailing_stop_active,
                 "unrealised_gross_inr": str(mtm["unrealised_gross_inr"]),
