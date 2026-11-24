@@ -187,7 +187,7 @@ class AngelOneProvider(MarketDataProvider):
     def get_quote(self, symbol: str) -> Optional[NormalizedQuote]:
         sym = symbol.strip().upper().replace("-EQ", "")
         with self._lock: quote = self._latest_quotes.get(sym)
-        if quote and quote.provenance.freshness not in ("STALE", "UNAVAILABLE"):
+        if quote and quote.provenance.freshness != "UNAVAILABLE":
             return quote
         return None
 
