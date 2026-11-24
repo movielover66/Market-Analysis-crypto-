@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ApiError,
   apiGet,
@@ -164,6 +164,8 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
   const [cfgDailyLoss, setCfgDailyLoss] = useState('1.50');
   const [cfgLeverage, setCfgLeverage] = useState('1');
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const prevLtpRef = useRef<Record<string, number>>({});
+  const [tickFlash, setTickFlash] = useState<Record<string, 'up' | 'down'>>({});
   const [cfgEnabled, setCfgEnabled] = useState(true);
   const [cfgE1, setCfgE1] = useState(true);
   const [cfgE2a, setCfgE2a] = useState(true);
@@ -401,6 +403,32 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
 
   // Derived data (with safe fallbacks so 0-out-of-0 NEVER appears!)
   const quotes: any[] = overview?.data?.quotes || [];
+
+  useEffect(() => {
+    if (!quotes || quotes.length === 0) return;
+    const nextFlashes: Record<string, 'up' | 'down'> = {};
+    for (const item of quotes) {
+      const sym = String(item?.symbol || '');
+      const ltp = Number(item?.ltp || 0);
+      if (!sym || ltp <= 0) continue;
+      const prev = prevLtpRef.current[sym];
+      if (prev !== undefined && prev !== ltp) {
+        nextFlashes[sym] = ltp > prev ? 'up' : 'down';
+      }
+      prevLtpRef.current[sym] = ltp;
+    }
+    if (Object.keys(nextFlashes).length > 0) {
+      setTickFlash((prev) => ({ ...prev, ...nextFlashes }));
+      const timer = window.setTimeout(() => {
+        setTickFlash((prev) => {
+          const copy = { ...prev };
+          for (const k of Object.keys(nextFlashes)) delete copy[k];
+          return copy;
+        });
+      }, 780);
+      return () => window.clearTimeout(timer);
+    }
+  }, [quotes]);
   const ledger = ledgerData?.ledger || autoStatus?.ledger || {};
   const openPositions: any[] = ledger?.open_positions_live || ledger?.open_positions || [];
   const closedTrades: any[] = ledgerData?.closed_trades || [];
@@ -519,8 +547,8 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
               style={{ backgroundColor: '#0F1420', borderColor: '#1E293B' }}
             >
               <span
-                className="w-2 h-2 rounded-full"
-                style={{ backgroundColor: wsLive ? '#00E676' : '#FFB800' }}
+                className="tiq-live-dot"
+                style={{ color: wsLive ? '#00E676' : '#FFB800' }}
               />
               <span className="text-xs font-bold font-mono" style={{ color: wsLive ? '#00E676' : '#FFB800' }}>
                 {wsLive ? 'LIVE' : 'SYNC'}
@@ -535,8 +563,8 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
             <button
               onClick={() => handleRunCycle(true)}
               disabled={scanning}
-              className="px-3 py-1.5 rounded-xl font-bold text-xs transition active:scale-95 disabled:opacity-60"
-              style={{ backgroundColor: '#00E676', color: '#04120B' }}
+              className={`px-3 py-1.5 rounded-xl font-bold text-xs transition active:scale-95 disabled:opacity-70 ${scanning ? 'animate-pulse' : 'hover:brightness-110'}`}
+              style={{ backgroundColor: '#00E676', color: '#04120B', boxShadow: scanning ? '0 0 18px rgba(0,230,118,0.45)' : '0 0 12px rgba(0,230,118,0.22)' }}
             >
               {scanning ? 'Scanning...' : 'Scan'}
             </button>
@@ -770,17 +798,17 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
 
             {/* Live Auto-Trader Scanner Telemetry Strip (FIXED: Never shows 0 out of 0!) */}
             <div
-              className="p-3.5 sm:p-4 rounded-2xl border"
+              className="p-3.5 sm:p-4 rounded-2xl border tiq-radar-box tiq-card-enter"
               style={{
                 backgroundColor: '#0F1420',
                 borderColor: 'rgba(0,230,118,0.28)',
                 boxShadow: '0 0 22px rgba(0,230,118,0.08)',
               }}
             >
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 relative z-10">
                 <div>
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: '#00E676' }} />
+                    <span className="tiq-live-dot" style={{ color: '#00E676' }} />
                     <span className="text-xs sm:text-sm font-extrabold text-white">
                       Auto-Trader Radar • {scanStats.watched} / {scanStats.universe} NSE Stocks Active
                     </span>
@@ -866,13 +894,14 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
                     const chg = Number(idx.change_pct ?? idx.pct_change ?? 0);
                     const up = chg >= 0;
                     return (
-                      <div key={idx.symbol} className="p-4 rounded-2xl border" style={{ backgroundColor: '#0F1420', borderColor: '#1E293B' }}>
+                      <div key={idx.symbol} className="p-4 rounded-2xl border tiq-card-lift tiq-card-enter" style={{ backgroundColor: '#0F1420', borderColor: '#1E293B' }}>
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-bold text-slate-400">{idx.symbol}</span>
                           <span
-                            className="text-[10px] font-bold px-2 py-0.5 rounded-full"
+                            className="inline-flex items-center gap-1.5 text-[10px] font-bold px-2 py-0.5 rounded-full"
                             style={{ backgroundColor: 'rgba(0,230,118,0.14)', color: '#00E676' }}
                           >
+                            <span className="tiq-live-dot" style={{ color: '#00E676' }} />
                             LIVE
                           </span>
                         </div>
@@ -974,8 +1003,8 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
                         return (
                           <div
                             key={pos.position_id}
-                            className="p-4 rounded-2xl border"
-                            style={{ backgroundColor: '#0F1420', borderColor: '#1E293B' }}
+                            className={`p-4 rounded-2xl border tiq-card-enter ${up ? 'tiq-trade-pos' : 'tiq-trade-neg'}`}
+                            style={{ backgroundColor: '#0F1420', borderColor: up ? 'rgba(0,230,118,0.32)' : 'rgba(255,59,92,0.32)' }}
                           >
                             {(() => {
                               const entryP = Number(pos.entry_fill_price || 0);
@@ -1009,7 +1038,14 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
                                   <div className="flex items-start justify-between gap-2">
                                     <div>
                                       <div className="flex items-center gap-1.5 flex-wrap">
+                                        <span className="tiq-live-dot" style={{ color: up ? '#00E676' : '#FF3B5C' }} />
                                         <span className="text-base font-extrabold text-white">{pos.symbol}</span>
+                                        <span
+                                          className="text-[9px] font-extrabold px-1.5 py-0.5 rounded uppercase tracking-wider tiq-blink"
+                                          style={{ backgroundColor: 'rgba(56,189,248,0.14)', color: '#38BDF8' }}
+                                        >
+                                          RUNNING
+                                        </span>
                                         <span
                                           className="text-[10px] font-bold px-1.5 py-0.5 rounded"
                                           style={{
@@ -1035,7 +1071,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
                                       <div className="text-[11px] text-slate-400 mt-1 flex items-center gap-2 flex-wrap">
                                         <span>Entry: <strong className="text-slate-200 font-mono">{entryClock}</strong></span>
                                         <span>•</span>
-                                        <span>চলছে: <strong className="text-sky-300 font-mono">{eH}h {eM}m {eS}s</strong></span>
+                                        <span className="inline-flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-sky-400 tiq-blink" />চলছে: <strong className="text-sky-300 font-mono">{eH}h {eM}m {eS}s</strong></span>
                                       </div>
                                     </div>
                                     <div className="text-right">
@@ -1141,7 +1177,10 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
                 <div className="p-4 rounded-2xl border" style={{ backgroundColor: '#0F1420', borderColor: '#1E293B' }}>
                   <div className="flex items-center justify-between mb-3">
                     <div>
-                      <div className="text-sm font-extrabold text-white">Live NSE Market Pulse ({quotes.length})</div>
+                      <div className="text-sm font-extrabold text-white flex items-center gap-2">
+                        <span className="tiq-live-dot" style={{ color: '#00E676' }} />
+                        <span>Live NSE Market Pulse ({quotes.length})</span>
+                      </div>
                       <div className="text-[11px] text-slate-400">Real-time WebSocket LTP stream • Tap any stock for Chart & 5-Level Depth</div>
                     </div>
                   </div>
@@ -1149,6 +1188,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
                     {quotes.slice(0, 12).map((q: any) => {
                       const chg = Number(q.change_pct ?? q.pct_change ?? 0);
                       const up = chg >= 0;
+                      const flash = tickFlash[q.symbol];
                       return (
                         <button
                           key={q.symbol}
@@ -1156,7 +1196,9 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({ onLogout }) => {
                             setChartSymbol(q.symbol);
                             setSection('chart');
                           }}
-                          className="p-3 rounded-xl border flex items-center justify-between text-left transition hover:border-slate-500"
+                          className={`p-3 rounded-xl border flex items-center justify-between text-left tiq-card-lift hover:border-slate-500 ${
+                            flash === 'up' ? 'tiq-flash-up' : flash === 'down' ? 'tiq-flash-down' : ''
+                          }`}
                           style={{ backgroundColor: '#0A0E17', borderColor: '#1B2436' }}
                         >
                           <div>
