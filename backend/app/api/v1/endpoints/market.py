@@ -53,7 +53,7 @@ async def market_status(request: Request):
 
 
 @router.get("/market/overview")
-async def market_overview(request: Request, limit: int = Query(12, ge=1, le=50)):
+async def market_overview(request: Request, limit: int = Query(30, ge=1, le=50)):
     """
     Unified Demo + Live Market Overview endpoint for the Dashboard & Market Overview pages.
     Works seamlessly in BOTH DEMO_MODE=true and DEMO_MODE=false (Angel One Live) without ever
@@ -76,7 +76,8 @@ async def market_overview(request: Request, limit: int = Query(12, ge=1, le=50))
         freshness = "LIVE" if provider_available else "UNAVAILABLE"
 
     market_state = get_market_state(now_utc, provider_available=provider_available)
-    instruments = svc.search("", active_only=True)[:limit]
+    from .intelligence import select_top_active_stocks
+    instruments, _ = select_top_active_stocks(svc, provider, limit)
     quotes: List[Dict[str, Any]] = []
     advances = 0
     declines = 0
