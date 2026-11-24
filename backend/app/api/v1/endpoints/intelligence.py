@@ -814,9 +814,32 @@ class AutoTraderConfigUpdate(BaseModel):
     reset_kill_switch: Optional[bool] = False
 
 
+
+def select_top_active_stocks(svc, provider, limit: int = 30):
+    """Selects top active movers across all 166+ NSE stocks (fixes stuck alphabetical A-only 12-stock list)."""
+    all_active = svc.search("", active_only=True)
+    if not all_active:
+        return [], []
+    scored = []
+    for inst in all_active:
+        abs_chg = 0.0
+        has_q = False
+        try:
+            q = provider.get_quote(inst.symbol)
+            if q and q.ltp > 0 and q.prev_close > 0:
+                abs_chg = abs(float(((Decimal(str(q.ltp)) - Decimal(str(q.prev_close))) / Decimal(str(q.prev_close))) * Decimal("100")))
+                has_q = True
+        except Exception:
+            pass
+        scored.append((inst, abs_chg, has_q))
+    if any(x[2] for x in scored):
+        scored.sort(key=lambda x: (1 if x[2] else 0, x[1]), reverse=True)
+    return [x[0] for x in scored[:limit]], []
+
+
 class AutoTraderRunRequest(BaseModel):
     execute_entries: bool = True
-    limit: int = Field(12, ge=3, le=30)
+    limit: int = Field(30, ge=3, le=50)
 
 
 class DailySummaryRequest(BaseModel):
@@ -891,7 +914,8 @@ async def api_auto_trader_status(
     live_ltps = await asyncio.to_thread(_collect_live_ltps, request, open_syms)
     ledger = _enrich_ledger_horizons(sim.account_ledger(user.user_id, at.config.starting_balance_inr, live_ltps))
     all_active = request.app.state.instrument_service.search("", active_only=True)
-    watched_syms = [i.symbol for i in all_active[:12]]
+    sel_insts, top_sectors = select_top_active_stocks(request.app.state.instrument_service, request.app.state.market_provider, 30)
+    watched_syms = [i.symbol for i in sel_insts]
     return {
         "config": at.config.to_dict(),
         "kill_switch_active": at.kill_switch_active,
@@ -949,7 +973,7 @@ async def api_auto_trader_update_config(
 def _execute_three_engine_cycle(
     request: Request,
     user_id: str,
-    limit: int = 12,
+    limit: int = 30,
     execute_entries: bool = True,
 ) -> Dict[str, Any]:
     provider = request.app.state.market_provider
@@ -959,7 +983,7 @@ def _execute_three_engine_cycle(
     news_svc = request.app.state.news_alerts_service
     tg = request.app.state.telegram_notifier
 
-    instruments = svc.search("", active_only=True)[:limit]
+    instruments, _top_secs = select_top_active_stocks(svc, provider, limit)
     symbols = [i.symbol for i in instruments]
     open_syms = [p.symbol for p in sim.positions.values() if p.user_id == user_id and p.status == "OPEN"]
     all_syms = list(dict.fromkeys(symbols + open_syms))
@@ -1016,7 +1040,7 @@ def _execute_three_engine_cycle(
 @router.get("/engines/scan")
 async def api_three_engine_scan(
     request: Request,
-    limit: int = Query(12, ge=3, le=30),
+    limit: int = Query(30, ge=3, le=50),
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     return await asyncio.to_thread(_execute_three_engine_cycle, request, user.user_id, limit, False)
