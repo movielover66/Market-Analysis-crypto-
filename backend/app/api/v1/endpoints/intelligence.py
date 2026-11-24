@@ -816,12 +816,12 @@ class AutoTraderConfigUpdate(BaseModel):
 
 
 def select_top_active_stocks(svc, provider, limit: int = 30):
-    """Selects top active movers across all 166+ NSE stocks (fixes stuck alphabetical A-only 12-stock list)."""
+    """Selects top active movers across all 166+ NSE stocks; evenly distributes across all sectors/letters if quotes are missing."""
     all_active = svc.search("", active_only=True)
     if not all_active:
         return [], []
     scored = []
-    for inst in all_active:
+    for idx, inst in enumerate(all_active):
         abs_chg = 0.0
         has_q = False
         try:
@@ -831,10 +831,26 @@ def select_top_active_stocks(svc, provider, limit: int = 30):
                 has_q = True
         except Exception:
             pass
-        scored.append((inst, abs_chg, has_q))
+        scored.append((inst, abs_chg, has_q, idx))
     if any(x[2] for x in scored):
         scored.sort(key=lambda x: (1 if x[2] else 0, x[1]), reverse=True)
-    return [x[0] for x in scored[:limit]], []
+        return [x[0] for x in scored[:limit]], []
+    # Never fall back to A/B alphabetical slice: spread evenly across entire universe + 5-min rotation
+    total = len(all_active)
+    if total <= limit:
+        return list(all_active), []
+    import time as _t
+    offset = int(_t.time() // 300) % max(1, total // limit)
+    step = max(1, total // limit)
+    picked = []
+    seen = set()
+    for k in range(limit):
+        pos = (offset + k * step) % total
+        while pos in seen:
+            pos = (pos + 1) % total
+        seen.add(pos)
+        picked.append(all_active[pos])
+    return picked, []
 
 
 class AutoTraderRunRequest(BaseModel):
