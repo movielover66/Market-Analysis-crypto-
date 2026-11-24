@@ -233,7 +233,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             while True:
                 now_ist = datetime.datetime.now(IST)
                 # Gather instant cached quotes (zero blocking REST calls in hot loop)
-                insts = svc.search("", active_only=True)[:12]
+                insts, _ = select_top_active_stocks(svc, provider, 30)
                 quotes_out = []
                 ltp_map: dict = {}
                 for inst in insts:
@@ -387,7 +387,7 @@ async def _ist_background_scheduler(app: FastAPI) -> None:
                 # 2. 09:30 - 11:30 IST (every 5 mins): 3-Engine Auto-Scan & Entry
                 if "09:30" <= hhmm <= "11:30" and at.config.enabled and (now_ist.minute % 5 == 0) and last_scan_minute != now_ist.minute:
                     try:
-                        await asyncio.to_thread(_execute_three_engine_cycle, dummy_req, cfg.owner_id, 12, True)
+                        await asyncio.to_thread(_execute_three_engine_cycle, dummy_req, cfg.owner_id, 30, True)
                         last_scan_minute = now_ist.minute
                     except Exception as exc:
                         logger.warning(f"Auto-scan scheduler error: {type(exc).__name__}: {exc}")
