@@ -110,10 +110,41 @@ class AngelOneProvider(MarketDataProvider):
         self._last_tick_epoch = 0.0
         self._last_error: Optional[str] = None
         self._last_request_ts = 0.0
+        self._last_reconnect_attempt = 0.0
         self._lock = threading.RLock()
 
     def is_configured(self) -> bool:
         return all((self.api_key, self.client_code, self.password, self.totp_secret))
+
+    def ensure_session(self) -> bool:
+        """Auto re-authenticates and restarts WebSocket if daily Angel One JWT expired or disconnected."""
+        if not self.is_configured():
+            return False
+        if self.smart and not self.is_session_expired():
+            return True
+        now_ts = time.time()
+        with self._lock:
+            if self.smart and not self.is_session_expired():
+                return True
+            if now_ts - self._last_reconnect_attempt < 30.0:
+                return False
+            self._last_reconnect_attempt = now_ts
+        try:
+            self.login()
+            syms = list(self._instruments.keys())
+            if not syms:
+                from ..domain.universe.nse_universe import NSE_LIQUID_CASH_UNIVERSE
+                self.refresh_instruments(NSE_LIQUID_CASH_UNIVERSE)
+                syms = list(self._instruments.keys())
+            if syms:
+                try:
+                    self.start_websocket(syms)
+                except Exception:
+                    pass
+            return True
+        except Exception as exc:
+            self._last_error = f"auto-relogin: {type(exc).__name__}: {str(exc)[:120]}"
+            return False
 
     def is_session_expired(self, now_dt: Optional[datetime.datetime] = None) -> bool:
         if not self.jwt_token or not self.session_created_ist:
@@ -192,7 +223,7 @@ class AngelOneProvider(MarketDataProvider):
         return None
 
     def get_candles(self, symbol: str, timeframe: str = "1d", limit: int = 30) -> List[NormalizedCandle]:
-        if not self.smart or self.is_session_expired():
+        if (not self.smart or self.is_session_expired()) and not self.ensure_session():
             return []
         sym = symbol.strip().upper().replace("-EQ", "")
         inst = self._instruments.get(sym)
@@ -411,6 +442,8 @@ class AngelOneProvider(MarketDataProvider):
         """
         sym = symbol.upper()
         inst = self._instruments.get(sym)
+        if inst and (not self.smart or self.is_session_expired()):
+            self.ensure_session()
         if not inst or not self.smart or self.is_session_expired():
             return None
         try:
