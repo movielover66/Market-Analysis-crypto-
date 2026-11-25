@@ -360,6 +360,10 @@ async def _ist_background_scheduler(app: FastAPI) -> None:
     while True:
         try:
             now_ist = datetime.datetime.now(IST)
+            # Auto-refresh Angel One daily JWT + WebSocket on new trading day
+            prov = getattr(app.state, "market_provider", None)
+            if prov and hasattr(prov, "is_session_expired") and prov.is_session_expired() and hasattr(prov, "ensure_session"):
+                await asyncio.to_thread(prov.ensure_session)
             # Mon=0 .. Fri=4
             if now_ist.weekday() < 5:
                 today = now_ist.strftime("%Y-%m-%d")
